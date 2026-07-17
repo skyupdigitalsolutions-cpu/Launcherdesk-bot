@@ -1,142 +1,55 @@
-// ─────────────────────────────────────────────────────────────
-//  LauncherDesk — Category Content Config
-//  Edit service descriptions here without touching bot logic
-// ─────────────────────────────────────────────────────────────
+// WhatsApp list limits: row title ≤24 chars, description ≤72 chars (emojis eat 2+)
+// So NO emojis in row titles, keep them short.
 
 const CATEGORIES = {
   biz_reg: {
-    label: '🏢 Business Registration',
-    title: '🏢 Business Registration & Incorporation',
-    body: [
-      'Start your business with the right legal foundation. We handle:',
-      '',
-      '• Private Limited Company',
-      '• LLP (Limited Liability Partnership)',
-      '• OPC (One Person Company)',
-      '• Section 8 Company (NGO)',
-      '• Trust & Society Registration',
-      '• Nidhi Company',
-      '• Overseas Business Setup',
-      '',
-      '⏱️ Typical turnaround: 7–15 working days',
-      '✅ End-to-end support — documentation to certificate',
-      '',
-      'Ready to get started?',
-    ].join('\n'),
+    label: 'Business Registration',
+    title: 'Business Registration',
+    body: 'Private Limited, LLP, OPC, Section 8 (NGO), Trust/Society, Nidhi Company, Overseas Setup',
   },
-
   licenses: {
-    label: '📄 Licenses & Certifications',
-    title: '📄 Licenses & Certifications',
-    body: [
-      'Operating legally and credibly is non-negotiable. We help you obtain:',
-      '',
-      '• GST Registration',
-      '• Startup India Recognition',
-      '• MSME / Udyam Registration',
-      '• ISO Certification',
-      '• FSSAI (Food License)',
-      '• IEC (Import Export Code)',
-      '• Trade License',
-      '• Factory License',
-      '',
-      '✅ We prepare, file, and follow up — you just sign.',
-    ].join('\n'),
+    label: 'Licenses & Certifications',
+    title: 'Licenses & Certifications',
+    body: 'GST, Startup India, MSME/Udyam, ISO, FSSAI, IEC, Trade License, Factory License',
   },
-
   finance: {
-    label: '💼 Finance & Accounts',
-    title: '💼 Finance & Accounting Services',
-    body: [
-      'Keep your books clean and your compliance tight:',
-      '',
-      '• Bookkeeping & Accounting',
-      '• GST Return Filing',
-      '• Income Tax Filing (ITR)',
-      '• Payroll Processing',
-      '• TDS Compliance',
-      '• Auditing Support',
-      '• Virtual CFO Services',
-      '',
-      '✅ Trusted by 100+ businesses across India',
-    ].join('\n'),
+    label: 'Finance & Accounts',
+    title: 'Finance & Accounts',
+    body: 'Bookkeeping, GST Filing, Income Tax, Payroll, TDS Compliance, Auditing, Virtual CFO',
   },
-
   it_services: {
-    label: '💻 IT Services',
-    title: '💻 IT Services',
-    body: [
-      'Your digital presence, built professionally:',
-      '',
-      '• Website Design & Development',
-      '• E-commerce Setup',
-      '• Digital Marketing',
-      '• Business Email & Domain Setup',
-      '• ERP Solutions',
-      '• Cloud Hosting & Management',
-      '',
-      '✅ One team. From domain to deployment.',
-    ].join('\n'),
+    label: 'IT Services',
+    title: 'IT Services',
+    body: 'Website Design, E-commerce, Digital Marketing, Business Email, ERP, Cloud Hosting',
   },
-
   legal: {
-    label: '⚖️ Legal & Compliance',
-    title: '⚖️ Legal & Compliance',
-    body: [
-      'Stay protected and compliant at every stage:',
-      '',
-      '• Legal Drafting & Agreements',
-      '• Trademark Registration',
-      '• Copyright & Patent Filing',
-      '• ROC / Annual Compliance',
-      '• Labour Law Compliance',
-      '• Legal Notices & Representation',
-      '',
-      '✅ Expert legal support without the premium law firm cost.',
-    ].join('\n'),
+    label: 'Legal & Compliance',
+    title: 'Legal & Compliance',
+    body: 'Legal Drafting, Trademark, Copyright, Patent, ROC Compliance, Labour Law, Legal Notices',
   },
-
   intl: {
-    label: '🌍 International Expansion',
-    title: '🌍 International Expansion',
-    body: [
-      'Take your business global with confidence:',
-      '',
-      '• Overseas Business Registration',
-      '• Import Export Code (IEC)',
-      '• Cross-Border Compliance',
-      '• International Tax Advisory',
-      '• Foreign Subsidiary Setup',
-      '',
-      '✅ We handle the complexity so you can focus on growth.',
-    ].join('\n'),
+    label: 'International Expansion',
+    title: 'International Expansion',
+    body: 'Overseas Registration, IEC, Cross-Border Compliance, International Tax, Foreign Subsidiary',
   },
-
   office: {
-    label: '🏢 Office Setup Solutions',
-    title: '🏢 Office Setup Solutions',
-    body: [
-      'Everything you need to set up a professional workspace:',
-      '',
-      '• 📍 Virtual Office Address — premium business addresses across India',
-      '• 🪑 Refurbished Office Furniture — quality furniture at startup-friendly prices',
-      '• 🛠️ Full Workspace Setup — end-to-end office design & fit-out',
-      '',
-      '✅ Whether you need an address or a full office — we\'ve got it covered.',
-    ].join('\n'),
+    label: 'Office Setup Solutions',
+    title: 'Office Setup Solutions',
+    body: 'Virtual Office Address, Refurbished Office Furniture, Workspace Setup',
   },
 };
 
-// List rows for the main menu (order matters — shows in this sequence)
+// Rows shown in the interactive list menu (Step 2)
+// title ≤24 chars, NO emojis. 'expert' is handled separately in the state machine.
 const MENU_ROWS = [
-  { id: 'biz_reg',     title: '🏢 Business Registration',    description: 'Pvt Ltd, LLP, OPC, NGO & more' },
-  { id: 'licenses',    title: '📄 Licenses & Certifications', description: 'GST, MSME, FSSAI, ISO & more' },
-  { id: 'finance',     title: '💼 Finance & Accounts',        description: 'Bookkeeping, GST filing, Payroll' },
-  { id: 'it_services', title: '💻 IT Services',               description: 'Website, Ecommerce, ERP, Cloud' },
-  { id: 'legal',       title: '⚖️ Legal & Compliance',        description: 'Trademark, ROC, Labour Law' },
-  { id: 'intl',        title: '🌍 International Expansion',   description: 'Overseas setup, IEC, Tax advisory' },
-  { id: 'office',      title: '🏢 Office Setup Solutions',    description: 'Virtual office, Furniture, Workspace' },
-  { id: 'expert',      title: '💬 Talk to an Expert',         description: 'Connect directly with our team' },
+  { id: 'biz_reg',     title: 'Business Registration', description: 'Pvt Ltd, LLP, OPC, NGO & more' },
+  { id: 'licenses',    title: 'Licenses & Certs',      description: 'GST, MSME, FSSAI, ISO & more' },
+  { id: 'finance',     title: 'Finance & Accounts',    description: 'Bookkeeping, GST filing, Payroll' },
+  { id: 'it_services', title: 'IT Services',           description: 'Website, Ecommerce, ERP, Cloud' },
+  { id: 'legal',       title: 'Legal & Compliance',    description: 'Trademark, ROC, Labour Law' },
+  { id: 'intl',        title: 'Intl Expansion',        description: 'Overseas setup, IEC, Tax advisory' },
+  { id: 'office',      title: 'Office Setup',          description: 'Virtual office, Furniture, Setup' },
+  { id: 'expert',      title: 'Talk to an Expert',     description: 'Connect directly with our team' },
 ];
 
 module.exports = { CATEGORIES, MENU_ROWS };

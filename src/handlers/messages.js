@@ -2,18 +2,6 @@ const msg91 = require('../services/msg91');
 const logger = require('../services/logger');
 const { CATEGORIES, MENU_ROWS } = require('../config/categories');
 
-// ─────────────────────────────────────────────────────────────
-//  Message Builders
-//  One function per outgoing message type.
-//  All send* functions return the MSG91 response promise.
-//
-//  Each function also logs the exact text it sends via the
-//  logger service (MongoDB + Google Sheets), since this is the
-//  one place the outgoing message text is actually known.
-// ─────────────────────────────────────────────────────────────
-
-// Log an outgoing message without ever throwing — logging must
-// never break the conversation flow.
 async function logOutgoingSafe(phone, message, messageType, state) {
   try {
     await logger.logOutgoing({ phone, message, messageType, state });
@@ -51,8 +39,8 @@ async function sendCategoryDetail(phone, categoryKey, state) {
 
   const text = `*${cat.title}*\n\n${cat.body}`;
   const buttons = [
-    { id: 'need_service', title: '✅ Need This Service' },
-    { id: 'back_menu',    title: '🔙 Back to Menu' },
+    { id: 'need_service', title: 'Need This Service' },
+    { id: 'back_menu',    title: 'Back to Menu' },
   ];
 
   const result = await msg91.sendButtonMessage(phone, text, buttons);
@@ -67,8 +55,8 @@ async function sendAskNameConfirm(phone, nameFromTemplate, state) {
     `Quick question — should we address you as *${nameFromTemplate}*?`;
 
   const buttons = [
-    { id: 'name_yes',  title: '✅ Yes, that\'s right' },
-    { id: 'name_edit', title: '✏️ Use a different name' },
+    { id: 'name_yes',  title: 'Yes, correct' },
+    { id: 'name_edit', title: 'Different name' },
   ];
 
   const result = await msg91.sendButtonMessage(phone, text, buttons);
@@ -76,7 +64,7 @@ async function sendAskNameConfirm(phone, nameFromTemplate, state) {
   return result;
 }
 
-// ── Step 4b: Ask for name (if they said 'different name') ─────
+// ── Step 4b: Ask for name ────────────────────────────────────
 async function sendAskName(phone, state) {
   const text = 'Please type your full name:';
   const result = await msg91.sendText(phone, text);
@@ -103,7 +91,7 @@ async function sendInvalidEmail(phone, state) {
 // ── Step 4e: Ask for business name ───────────────────────────
 async function sendAskBusiness(phone, state) {
   const text = `What's your *business name*?`;
-  const buttons = [{ id: 'no_biz', title: '🆕 Not registered yet' }];
+  const buttons = [{ id: 'no_biz', title: 'Not registered yet' }];
   const result = await msg91.sendButtonMessage(phone, text, buttons);
   await logOutgoingSafe(phone, text, 'interactive', state);
   return result;
@@ -130,8 +118,8 @@ async function sendConfirmation(phone, data, state) {
     `Shall I go ahead?`;
 
   const buttons = [
-    { id: 'confirm_yes',  title: '✅ Confirm & Submit' },
-    { id: 'confirm_edit', title: '✏️ Edit Details' },
+    { id: 'confirm_yes',  title: 'Confirm & Submit' },
+    { id: 'confirm_edit', title: 'Edit Details' },
   ];
 
   const result = await msg91.sendButtonMessage(phone, text, buttons);
@@ -147,8 +135,8 @@ async function sendLeadSuccess(phone, data, state) {
     `Need anything else?`;
 
   const buttons = [
-    { id: 'browse_more', title: '🔍 Browse More Services' },
-    { id: 'visit_web',   title: '🌐 Visit Website' },
+    { id: 'browse_more', title: 'Browse Services' },
+    { id: 'visit_web',   title: 'Visit Website' },
   ];
 
   const result = await msg91.sendButtonMessage(phone, text, buttons);
