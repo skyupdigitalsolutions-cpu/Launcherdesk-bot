@@ -48,12 +48,26 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'LauncherDesk WhatsApp Bot', time: new Date().toISOString() });
 });
 
+// ── Ignore messages sent to other numbers on the same MSG91 account ──
+function normalizeNumber(num) {
+  let digits = String(num || '').replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) digits = digits.slice(2);
+  if (digits.length === 11 && digits.startsWith('0')) digits = digits.slice(1);
+  return digits;
+}
+
 // ── MSG91 Inbound Webhook ─────────────────────────────────────
 // Configure this URL in MSG91: WhatsApp → Settings → Inbound webhook
 // URL: https://your-render-url.onrender.com/webhook/whatsapp
 app.post('/webhook/whatsapp', async (req, res) => {
   // Always respond 200 immediately — MSG91 retries if it gets no quick response
   res.sendStatus(200);
+  const toNumber = req.body?.integratedNumber;
+  const ownNumber = process.env.MSG91_WHATSAPP_NUMBER;
+  if (toNumber && ownNumber && normalizeNumber(toNumber) !== normalizeNumber(ownNumber)) {
+    console.log(`[Webhook] Ignoring message for other number ${toNumber}`);
+    return;
+  }
 
   try {
     // Log raw payload during development (remove in production)
