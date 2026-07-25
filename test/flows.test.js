@@ -269,6 +269,67 @@ console.log('── Back navigation ──');
   console.log('   ✓ Back respects skipped steps');
 }
 
+// ── Taps delivered as PLAIN TEXT (observed MSG91 behaviour) ─────
+// The production webhook delivers list/button taps as text messages
+// containing the row title, with listRowId and buttonId both null.
+// Every flow must therefore be completable using titles alone.
+console.log('── Tap-as-plain-text (no row id) ──');
+
+const titleOnly = (step, rendered) => {
+  if (step.input === 'text') {
+    if (step.validate === 'email') return { text: 'founder@acme.com' };
+    if (step.validate === 'name')  return { text: 'Rahul Sharma' };
+    if (step.validate === 'city')  return { text: 'Bengaluru' };
+    return { text: 'Acme Technologies' };
+  }
+  // Send the visible label as text, exactly as MSG91 does — no ids.
+  if (step.input === 'mobile_confirm') return { text: 'Yes, use this' };
+  if (step.input === 'multi')          return { text: 'None of these' };
+  return { text: step.options[0].title };
+};
+
+for (const flowId of Object.keys(FLOWS)) {
+  const r = walk(flowId, titleOnly, `${flowId} (text-only)`);
+  console.log(`   ✓ ${flowId} completes with titles only${r.branchedTo ? ' → ' + r.branchedTo : ''}`);
+  if (r.branchedTo) walk(r.branchedTo, titleOnly, `${r.branchedTo} (text-only)`);
+}
+
+// Control rows specifically, since these have no option to fall back on
+{
+  const flow = FLOWS.biz_reg;
+  const addonsIndex = flow.steps.findIndex((s) => s.key === 'addons');
+  const mobileIndex = flow.steps.findIndex((s) => s.key === 'mobile');
+
+  const cases = [
+    [addonsIndex, 'Done',          'control', 'done'],
+    [addonsIndex, 'None of these', 'control', 'done'],
+    [addonsIndex, 'Back',          'control', 'back'],
+    [addonsIndex, 'Skip',          'control', 'skip'],
+    [0,           'Start Over',    'control', 'restart'],
+  ];
+  for (const [idx, text, action, control] of cases) {
+    const r = engine.interpret(flow, { addons: ['gst'] }, idx, { text, waNumber: '919876543210' });
+    ok(r.action === action && r.control === control,
+      `typed "${text}" should be control:${control}, got ${r.action}:${r.control}`);
+  }
+
+  // "Yes, use this" must resolve to the WhatsApp number as the answer
+  const m = engine.interpret(flow, {}, mobileIndex, { text: 'Yes, use this', waNumber: '919876543210' });
+  ok(m.action === 'answer' && m.value === '9876543210',
+    `typed "Yes, use this" should answer with 9876543210, got ${m.action}:${m.value}`);
+
+  const other = engine.interpret(flow, {}, mobileIndex, { text: 'Use another', waNumber: '919876543210' });
+  ok(other.action === 'control' && other.control === 'mobile_other',
+    'typed "Use another" should request typed entry');
+
+  // A required step must not be skippable by typing Skip
+  const req = engine.interpret(flow, {}, 0, { text: 'Skip', waNumber: '919876543210' });
+  ok(req.action !== 'control' || req.control !== 'skip',
+    'typed "Skip" must not skip a required step');
+
+  console.log('   ✓ Done / None of these / Back / Skip / Start Over / mobile confirm all resolve from text');
+}
+
 // ── Results ────────────────────────────────────────────────────
 console.log('\n' + '═'.repeat(58));
 if (fail === 0) {

@@ -267,6 +267,24 @@ function renderStep(flow, answers, index, opts = {}) {
 //   { action: 'unrecognised' }             couldn't interpret
 // ─────────────────────────────────────────────────────────────
 
+// Some MSG91 webhook configurations deliver a list/button tap as a
+// plain TEXT message containing the row title, with no interactive
+// payload and no row id. When that happens every control row arrives
+// as bare text like "Done" or "Use another", so matching on id alone
+// would strand the user mid-step. This maps the visible title of every
+// control back to its control id.
+const CONTROL_TITLES = {
+  'back':             'back',
+  'skip':             'skip',
+  'start over':       'restart',
+  'restart':          'restart',
+  'done':             'done',
+  'none of these':    'done',
+  'yes, use this':    'mobile_yes',
+  'use another':      'mobile_other',
+  'back to menu':     'restart',
+};
+
 function interpret(flow, answers, index, input) {
   const step = flow.steps[index];
   const tapped = input.listRowId || input.buttonId || '';
@@ -286,6 +304,23 @@ function interpret(flow, answers, index, input) {
     }
     if (control === 'mobile_other') return { action: 'control', control: 'mobile_other' };
     return { action: 'control', control };
+  }
+
+  // ── Control row arriving as plain text (see CONTROL_TITLES) ──
+  // Checked before option matching so a control is never mistaken for
+  // an answer, and only for exact matches so it can't swallow a
+  // legitimate free-text reply.
+  const controlByTitle = CONTROL_TITLES[typed.toLowerCase()];
+  if (controlByTitle) {
+    if (controlByTitle === 'mobile_yes') {
+      const m = VALIDATORS.mobile(input.waNumber);
+      if (m.ok) return { action: 'answer', value: m.value };
+    }
+    if (controlByTitle === 'skip' && step.required) {
+      // "Skip" typed on a required step isn't a valid control.
+    } else {
+      return { action: 'control', control: controlByTitle };
+    }
   }
 
   // ── Tapped an option ───────────────────────────────────────

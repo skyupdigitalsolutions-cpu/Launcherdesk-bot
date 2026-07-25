@@ -114,7 +114,8 @@ async function handleMenu(session, parsed) {
   const { phone } = parsed;
   const selected = parsed.listRowId || parsed.buttonId || '';
 
-  if (selected === 'expert') {
+  const upperText = String(parsed.text || '').toUpperCase().trim();
+  if (selected === 'expert' || upperText === 'TALK TO AN EXPERT') {
     return handleExpertHandoff(session, phone, 'menu_request');
   }
 
@@ -366,7 +367,9 @@ async function handleSummary(session, parsed) {
     return sendCurrentStep(session, phone);
   }
 
-  if (tapped === 'ctl:expert' || upper === 'EXPERT') {
+  // Titles matched too: some MSG91 setups deliver a button tap as
+  // plain text containing the label rather than an interactive payload.
+  if (tapped === 'ctl:expert' || upper === 'EXPERT' || upper === 'TALK TO AN EXPERT') {
     return handleExpertHandoff(session, phone, 'summary_request');
   }
 
@@ -523,19 +526,21 @@ async function handleDone(session, parsed) {
   const { phone } = parsed;
   const tapped = parsed.listRowId || parsed.buttonId || '';
 
-  if (tapped === 'ctl:browse_more') {
+  const upper = String(parsed.text || '').toUpperCase().trim();
+
+  if (tapped === 'ctl:browse_more' || upper === 'BROWSE SERVICES' || upper === 'BACK TO MENU') {
     session.resetFlow();
     session.state = 'MENU';
     await session.save();
     return messages.sendWelcomeMenu(phone, session.state);
   }
 
-  if (tapped === 'ctl:visit_web') {
+  if (tapped === 'ctl:visit_web' || upper === 'VISIT WEBSITE') {
     const url = process.env.WEBSITE_URL || 'https://launcherdesk.in';
     return messages.sendWebsite(phone, url, session.state);
   }
 
-  if (tapped === 'ctl:expert') {
+  if (tapped === 'ctl:expert' || upper === 'TALK TO AN EXPERT') {
     return handleExpertHandoff(session, phone, 'post_submit_request');
   }
 
