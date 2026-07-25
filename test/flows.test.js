@@ -330,6 +330,53 @@ for (const flowId of Object.keys(FLOWS)) {
   console.log('   ✓ Done / None of these / Back / Skip / Start Over / mobile confirm all resolve from text');
 }
 
+// ── Regression: bugs seen in production ────────────────────────
+// Both caused by MSG91 delivering taps as plain text with no row id.
+console.log('── Production bug regressions ──');
+{
+  const flow = FLOWS.biz_reg;
+  const cityIndex = flow.steps.findIndex((s) => s.key === 'city');
+  const nameIndex = flow.steps.findIndex((s) => s.key === 'name');
+
+  // BUG 1: "City: Already Registered"
+  // User tapped a button belonging to the PREVIOUS question while the
+  // city question was open; it arrived as text and was stored as city.
+  const stale = engine.interpret(flow, {}, cityIndex, { text: 'Already Registered' });
+  ok(stale.action === 'stale_tap',
+    `stale button text must not become a city answer (got ${stale.action})`);
+  ok(stale.tapped === 'Already Registered', 'stale tap should report which button');
+
+  // Every option title from every other step must be rejected as a city
+  let leaks = 0;
+  for (let i = 0; i < flow.steps.length; i++) {
+    if (i === cityIndex || !flow.steps[i].options) continue;
+    for (const opt of flow.steps[i].options) {
+      const r = engine.interpret(flow, {}, cityIndex, { text: opt.title });
+      if (r.action === 'answer') leaks++;
+    }
+  }
+  ok(leaks === 0, `${leaks} option titles still accepted as a city`);
+
+  // BUG 2: "Name: Hi"
+  // User sent a greeting to restart; it was stored as their name.
+  for (const g of ['Hi', 'hi', 'HELLO', 'hey', 'Hii']) {
+    const r = engine.interpret(flow, {}, nameIndex, { text: g });
+    ok(r.action === 'greeting', `"${g}" must not become a name (got ${r.action})`);
+  }
+  ok(!engine.VALIDATORS.name('Hi').ok, 'name validator should reject "Hi"');
+  ok(!engine.VALIDATORS.name('test').ok, 'name validator should reject "test"');
+
+  // Real answers must still work
+  ok(engine.interpret(flow, {}, cityIndex, { text: 'Bengaluru' }).action === 'answer',
+    'a real city must still be accepted');
+  ok(engine.interpret(flow, {}, nameIndex, { text: 'Rahul Sharma' }).action === 'answer',
+    'a real name must still be accepted');
+  ok(engine.interpret(flow, {}, cityIndex, { text: 'Hyderabad' }).action === 'answer',
+    'city Hyderabad must still be accepted');
+
+  console.log('   ✓ stale taps rejected, greetings caught, real answers unaffected');
+}
+
 // ── Results ────────────────────────────────────────────────────
 console.log('\n' + '═'.repeat(58));
 if (fail === 0) {

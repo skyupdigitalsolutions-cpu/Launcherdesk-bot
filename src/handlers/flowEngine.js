@@ -46,6 +46,12 @@ const VALIDATORS = {
     if (v.length < 2) return { ok: false, error: 'Please enter your full name (at least 2 characters).' };
     if (v.length > 60) return { ok: false, error: "That's a bit long — please enter just your name." };
     if (/\d/.test(v))  return { ok: false, error: "Names shouldn't contain numbers. Please try again." };
+    // Second line of defence — interpret() catches greetings before
+    // this, but a name field is the one place a stray "Hi" does the
+    // most damage, so it is rejected here too.
+    if (['hi', 'hii', 'hello', 'hey', 'test', 'ok', 'yes', 'no'].includes(v.toLowerCase())) {
+      return { ok: false, error: "That doesn't look like a name. What should we call you?" };
+    }
     return { ok: true, value: titleCase(v) };
   },
 
@@ -285,6 +291,28 @@ const CONTROL_TITLES = {
   'back to menu':     'restart',
 };
 
+// Bare greetings. MSG91 delivers button taps as plain text, and users
+// also send these mid-flow when they want to start again. Either way
+// they must never be silently accepted as a name or city.
+const GREETINGS = new Set(['hi', 'hii', 'hiii', 'hello', 'helo', 'hey', 'hlo', 'start']);
+
+// A tap on a button from an EARLIER question arrives as plain text
+// identical to that button's title. Without this check it would be
+// accepted as the answer to whatever free-text question is currently
+// open — which is how "City: Already Registered" happens.
+function matchesOtherStepOption(flow, index, typed) {
+  const t = typed.toLowerCase();
+  for (let i = 0; i < flow.steps.length; i++) {
+    if (i === index) continue;
+    const step = flow.steps[i];
+    if (!step.options) continue;
+    if (step.options.some((o) => o.title.toLowerCase() === t)) {
+      return step.options.find((o) => o.title.toLowerCase() === t).title;
+    }
+  }
+  return null;
+}
+
 function interpret(flow, answers, index, input) {
   const step = flow.steps[index];
   const tapped = input.listRowId || input.buttonId || '';
@@ -348,6 +376,19 @@ function interpret(flow, answers, index, input) {
 
   // ── Free text / mobile entry ───────────────────────────────
   if (step.input === 'text' || step.input === 'mobile_confirm') {
+    // A bare greeting is never a real answer. Users send these to
+    // restart, and accepting one silently produces "Name: Hi".
+    if (GREETINGS.has(typed.toLowerCase())) {
+      return { action: 'greeting' };
+    }
+
+    // Text identical to a button from another question is almost
+    // certainly a stale tap, not a typed answer.
+    const stale = matchesOtherStepOption(flow, index, typed);
+    if (stale) {
+      return { action: 'stale_tap', tapped: stale };
+    }
+
     const validator = VALIDATORS[step.validate] || VALIDATORS.free;
     const result = validator(typed);
     if (!result.ok) return { action: 'invalid', error: result.error };

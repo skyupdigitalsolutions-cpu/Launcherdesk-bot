@@ -239,6 +239,35 @@ async function sendFallback(phone, state) {
   return result;
 }
 
+
+// ── Mid-flow greeting: ask rather than guess ──────────────────
+// Sending "Hi" halfway through a flow is ambiguous — it usually means
+// "start again", but silently accepting it as an answer produces
+// nonsense like "Name: Hi", and silently restarting discards work.
+async function sendResumeOrRestart(phone, currentPrompt, state) {
+  const text =
+    'Hi again! \u{1F44B}\n\n' +
+    'You\'re in the middle of a request. Would you like to carry on, or start fresh?\n\n' +
+    `_Current question: ${currentPrompt}_`;
+  const buttons = [
+    { id: 'ctl:resume',       title: 'Continue' },
+    { id: 'ctl:restart_flow', title: 'Start Over' },
+  ];
+  const result = await msg91.sendButtonMessage(phone, text, buttons);
+  await logOutgoingSafe(phone, text, 'interactive', state);
+  return result;
+}
+
+// ── Stale button tap detected ─────────────────────────────────
+async function sendStaleTapWarning(phone, tappedTitle, state) {
+  const text =
+    `That looks like the *${tappedTitle}* button from an earlier question. \u{1F914}\n\n` +
+    'Let me ask the current one again:';
+  const result = await msg91.sendText(phone, text);
+  await logOutgoingSafe(phone, text, 'text', state);
+  return result;
+}
+
 module.exports = {
   sendWelcomeMenu,
   sendStep,
@@ -257,6 +286,8 @@ module.exports = {
   sendOptOutConfirm,
   sendOptInConfirm,
   sendFallback,
+  sendResumeOrRestart,
+  sendStaleTapWarning,
   // Kept so any older dashboard/route code that imports it won't crash
   sendMainMenu: sendWelcomeMenu,
 };

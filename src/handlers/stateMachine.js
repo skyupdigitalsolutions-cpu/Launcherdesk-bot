@@ -191,6 +191,21 @@ async function handleFlow(session, parsed) {
     return advance(session, phone, flow);
   }
 
+  // Response to the "continue or start over?" prompt sent after a
+  // mid-flow greeting. Checked before interpret() so these titles are
+  // never mistaken for an answer to the current question.
+  const tappedRaw = parsed.listRowId || parsed.buttonId || '';
+  const upperRaw = String(parsed.text || '').toUpperCase().trim();
+  if (tappedRaw === 'ctl:resume' || upperRaw === 'CONTINUE') {
+    return sendCurrentStep(session, phone);
+  }
+  if (tappedRaw === 'ctl:restart_flow' || upperRaw === 'START OVER') {
+    session.resetFlow();
+    session.state = 'MENU';
+    await session.save();
+    return messages.sendWelcomeMenu(phone, session.state);
+  }
+
   const result = engine.interpret(flow, answers, session.stepIndex, {
     ...parsed,
     waNumber: phone,
@@ -228,6 +243,23 @@ async function handleFlow(session, parsed) {
 
     case 'invalid':
       return handleInvalid(session, phone, flow, result.error);
+
+    // User sent "Hi" mid-flow — almost always they want to start
+    // again. Ask instead of guessing: silently accepting it corrupts
+    // the answer, silently restarting throws away their progress.
+    case 'greeting': {
+      await session.save();
+      return messages.sendResumeOrRestart(phone, step.prompt, session.state);
+    }
+
+    // Text identical to a button from an earlier question. Re-ask the
+    // current question rather than storing the stale value. Does not
+    // count towards invalidAttempts — the user didn't get it wrong.
+    case 'stale_tap': {
+      await session.save();
+      await messages.sendStaleTapWarning(phone, result.tapped, session.state);
+      return sendCurrentStep(session, phone);
+    }
 
     default:
       return handleInvalid(
