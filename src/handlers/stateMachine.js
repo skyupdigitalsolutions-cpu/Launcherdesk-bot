@@ -1,284 +1,579 @@
 const Session  = require('../models/Session');
 const Lead     = require('../models/Lead');
+const Listing  = require('../models/Listing');
 const messages = require('./messages');
 const msg91    = require('../services/msg91');
 const sheets   = require('../services/sheets');
 const logger   = require('../services/logger');
-const { CATEGORIES } = require('../config/categories');
+const engine   = require('./flowEngine');
+const { FLOWS } = require('../config/flows');
 
 // ─────────────────────────────────────────────────────────────
-//  LauncherDesk Bot — State Machine
+//  LauncherDesk Bot — State Machine (Phase 1)
 //
 //  States:
-//   NEW        → First contact / after opt-in
-//   MENU       → Waiting for category selection from list
-//   CATEGORY   → Category detail shown, waiting for button
-//   ASK_NAME   → Waiting for name confirmation or new name text
-//   ASK_EMAIL  → Waiting for email text
-//   ASK_BUSINESS → Waiting for business name text or 'not yet' btn
-//   ASK_CITY   → Waiting for city text
-//   CONFIRM    → Confirmation shown, waiting for confirm/edit
-//   DONE       → Lead saved, conversation complete
-//   HUMAN      → Bot paused, human agent handling
+//   MENU     Waiting for a category pick from the main list
+//   FLOW     Inside a category's question sequence
+//   SUMMARY  Summary card shown, waiting for Submit / Edit
+//   DONE     Lead saved
+//   HUMAN    Bot paused, human agent handling
+//
+//  The per-question logic all lives in config/flows.js and is
+//  executed by flowEngine.js. This file only owns transitions
+//  between the five states above, persistence, and side effects
+//  (Sheets, sales alerts). Adding a category needs no change here.
 // ─────────────────────────────────────────────────────────────
-
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 async function handleInbound(parsed) {
   const { phone, type, text, buttonId, listRowId } = parsed;
-  const upperText = text.toUpperCase().trim();
+  const upper = String(text || '').toUpperCase().trim();
 
-  // Load or create session up front — needed for logging and the pause check
-  let session = await getOrCreate(phone);
-
-  // ── Log incoming message immediately, before any state changes ──
+  const session = await getOrCreate(phone);
   await logIncomingSafe(phone, text, type, session.state);
 
-  // ── Human takeover: bot is paused — log only, no automatic replies ──
+  // Any inbound message clears a pending reminder — they're active again.
+  if (session.reminderSentAt) session.reminderSentAt = null;
+
+  // ── Human takeover ────────────────────────────────────────
   if (session.botPaused) {
-    console.log(`[Bot] Bot paused for ${phone} — skipping automation (human takeover)`);
+    console.log(`[Bot] Paused for ${phone} — human takeover, no auto-reply`);
+    await session.save();
     return;
   }
 
-  // ── Global: opt-out ──────────────────────────────────────
-  if (upperText === 'STOP') {
-    const updatedSession = await Session.findOneAndUpdate(
-      { phone },
-      { optedOut: true, state: 'NEW' },
-      { upsert: true, new: true }
-    );
-    await messages.sendOptOutConfirm(phone, updatedSession.state);
-    return;
-  }
-
-  // ── Global: opt-in ───────────────────────────────────────
-  if (upperText === 'START') {
-    const updatedSession = await Session.findOneAndUpdate(
-      { phone },
-      { optedOut: false, state: 'NEW' },
-      { upsert: true, new: true }
-    );
-    await messages.sendOptInConfirm(phone, updatedSession.state);
-    return;
-  }
-
-  // ── Global: force menu keyword ────────────────────────────
-  if (upperText === 'MENU' || upperText === 'HI' || upperText === 'HELLO') {
-    if (session.optedOut) return;
+  // ── Opt-out / opt-in ──────────────────────────────────────
+  if (upper === 'STOP') {
+    session.optedOut = true;
+    session.resetFlow();
     session.state = 'MENU';
     await session.save();
-    await messages.sendMainMenu(phone, session.state);
+    await messages.sendOptOutConfirm(phone, session.state);
     return;
   }
 
-  // If opted out, silently ignore all messages
+  if (upper === 'START') {
+    session.optedOut = false;
+    session.resetFlow();
+    session.state = 'MENU';
+    await session.save();
+    await messages.sendOptInConfirm(phone, session.state);
+    return;
+  }
+
   if (session.optedOut) {
-    console.log(`[Bot] Ignored message from opted-out number: ${phone}`);
+    console.log(`[Bot] Ignored message from opted-out number ${phone}`);
     return;
   }
 
-  console.log(`[Bot] ${phone} | state: ${session.state} | type: ${type} | text: "${text}" | btn: ${buttonId} | list: ${listRowId}`);
+  // ── Global menu keywords ──────────────────────────────────
+  // Deliberately excludes bare "HI"/"HELLO" while inside a flow:
+  // in stage 1 these were checked before state routing, so a user
+  // whose name or city legitimately contained them would be thrown
+  // back to the menu mid-capture.
+  const isMenuKeyword = upper === 'MENU' || upper === 'RESTART' || upper === 'START OVER';
+  const isGreeting    = upper === 'HI' || upper === 'HELLO' || upper === 'HEY';
 
-  // ── Route by state ────────────────────────────────────────
+  if (isMenuKeyword || (isGreeting && session.state !== 'FLOW')) {
+    session.resetFlow();
+    session.state = 'MENU';
+    await session.save();
+    await messages.sendWelcomeMenu(phone, session.state);
+    return;
+  }
+
+  console.log(
+    `[Bot] ${phone} | ${session.state}` +
+    `${session.flowId ? `:${session.flowId}[${session.stepIndex}]` : ''}` +
+    ` | ${type} | "${text}" | btn=${buttonId} list=${listRowId}`
+  );
+
   switch (session.state) {
+    case 'MENU':    await handleMenu(session, parsed);    break;
+    case 'FLOW':    await handleFlow(session, parsed);    break;
+    case 'SUMMARY': await handleSummary(session, parsed); break;
+    case 'DONE':    await handleDone(session, parsed);    break;
 
-    // ── NEW: Template "Explore Services" button clicked ────
-    case 'NEW': {
-      // MSG91 sends template quick reply as type=button with text='Explore Services'
-      const isExplore =
-        buttonId === 'Explore Services' ||
-        text === 'Explore Services' ||
-        upperText.includes('EXPLORE');
-
-      if (isExplore) {
-        session.state = 'MENU';
-        await session.save();
-        await messages.sendMainMenu(phone, session.state);
-      } else {
-        // Any other first message — show menu anyway (graceful)
-        session.state = 'MENU';
-        await session.save();
-        await messages.sendMainMenu(phone, session.state);
-      }
+    case 'HUMAN':
+      console.log(`[Bot] ${phone} in HUMAN state — skipped`);
       break;
-    }
 
-    // ── MENU: List selection received ─────────────────────
-    case 'MENU': {
-      const selected = listRowId || buttonId || '';
-
-      if (selected === 'expert') {
-        await handleExpertHandoff(session, phone);
-        break;
-      }
-
-      if (CATEGORIES[selected]) {
-        session.state = 'CATEGORY';
-        session.data.category      = selected;
-        session.data.categoryLabel = CATEGORIES[selected].label;
-        await session.save();
-        await messages.sendCategoryDetail(phone, selected, session.state);
-      } else {
-        // Unrecognised — re-send menu
-        await messages.sendFallback(phone, session.state);
-        await messages.sendMainMenu(phone, session.state);
-      }
-      break;
-    }
-
-    // ── CATEGORY: Waiting for Need This Service / Back / Expert
-    case 'CATEGORY': {
-      const btn = buttonId || '';
-
-      if (btn === 'need_service') {
-        // Start lead capture — use phone as name placeholder until we know their name
-        session.state      = 'ASK_NAME';
-        session.data.phone = phone;
-        await session.save();
-        // We don't have their name yet from template at this point
-        // Ask for name directly
-        await messages.sendAskName(phone, session.state);
-
-      } else if (btn === 'back_menu') {
-        session.state = 'MENU';
-        await session.save();
-        await messages.sendMainMenu(phone, session.state);
-
-      } else if (btn === 'expert' || upperText.includes('EXPERT') || upperText.includes('AGENT')) {
-        await handleExpertHandoff(session, phone);
-
-      } else {
-        await messages.sendFallback(phone, session.state);
-        await messages.sendCategoryDetail(phone, session.data.category, session.state);
-      }
-      break;
-    }
-
-    // ── ASK_NAME: Waiting for typed name ─────────────────
-    case 'ASK_NAME': {
-      if (!text || text.length < 2) {
-        const msgText = 'Please enter your full name (at least 2 characters):';
-        await msg91.sendText(phone, msgText);
-        await logOutgoingSafe(phone, msgText, 'text', session.state);
-        break;
-      }
-      session.data.name  = toTitleCase(text);
-      session.data.phone = phone;
-      session.state      = 'ASK_EMAIL';
-      await session.save();
-      await messages.sendAskEmail(phone, session.data.name, session.state);
-      break;
-    }
-
-    // ── ASK_EMAIL: Waiting for email ─────────────────────
-    case 'ASK_EMAIL': {
-      if (!EMAIL_REGEX.test(text)) {
-        await messages.sendInvalidEmail(phone, session.state);
-        break;
-      }
-      session.data.email = text.toLowerCase().trim();
-      session.state      = 'ASK_BUSINESS';
-      await session.save();
-      await messages.sendAskBusiness(phone, session.state);
-      break;
-    }
-
-    // ── ASK_BUSINESS: Waiting for business name or 'not yet'
-    case 'ASK_BUSINESS': {
-      const btn = buttonId || '';
-
-      if (btn === 'no_biz') {
-        session.data.businessName = 'Not registered yet';
-      } else if (text && text.length >= 2) {
-        session.data.businessName = text.trim();
-      } else {
-        const msgText = 'Please enter your business name, or tap the button if not registered yet:';
-        await msg91.sendText(phone, msgText);
-        await logOutgoingSafe(phone, msgText, 'text', session.state);
-        await messages.sendAskBusiness(phone, session.state);
-        break;
-      }
-
-      session.state = 'ASK_CITY';
-      await session.save();
-      await messages.sendAskCity(phone, session.state);
-      break;
-    }
-
-    // ── ASK_CITY: Waiting for city ────────────────────────
-    case 'ASK_CITY': {
-      if (!text || text.length < 2) {
-        const msgText = 'Please enter your city name:';
-        await msg91.sendText(phone, msgText);
-        await logOutgoingSafe(phone, msgText, 'text', session.state);
-        break;
-      }
-      session.data.city = toTitleCase(text.trim());
-      session.state     = 'CONFIRM';
-      await session.save();
-      await messages.sendConfirmation(phone, session.data, session.state);
-      break;
-    }
-
-    // ── CONFIRM: Waiting for confirm or edit ──────────────
-    case 'CONFIRM': {
-      const btn = buttonId || '';
-
-      if (btn === 'confirm_yes') {
-        await saveLead(session, phone);
-
-      } else if (btn === 'confirm_edit') {
-        // Restart capture from name
-        session.state = 'ASK_NAME';
-        await session.save();
-        const msgText = '✏️ No problem! Let\'s start over.\n\nWhat\'s your name?';
-        await msg91.sendText(phone, msgText);
-        await logOutgoingSafe(phone, msgText, 'text', session.state);
-
-      } else {
-        await messages.sendFallback(phone, session.state);
-        await messages.sendConfirmation(phone, session.data, session.state);
-      }
-      break;
-    }
-
-    // ── DONE: Conversation complete ───────────────────────
-    case 'DONE': {
-      const btn = buttonId || '';
-
-      if (btn === 'browse_more') {
-        session.state = 'MENU';
-        await session.save();
-        await messages.sendMainMenu(phone, session.state);
-
-      } else if (btn === 'visit_web') {
-        const msgText = `🌐 Visit us at: ${process.env.WEBSITE_URL || 'https://launcherdesk.in'}\n\nFeel free to message us anytime! 👋`;
-        await msg91.sendText(phone, msgText);
-        await logOutgoingSafe(phone, msgText, 'text', session.state);
-
-      } else {
-        // Any text in DONE state — show menu again
-        session.state = 'MENU';
-        await session.save();
-        await messages.sendMainMenu(phone, session.state);
-      }
-      break;
-    }
-
-    // ── HUMAN: Bot paused ─────────────────────────────────
-    case 'HUMAN': {
-      // Silently ignore — human agent is handling
-      console.log(`[Bot] Message from ${phone} in HUMAN state — skipped`);
-      break;
-    }
-
-    default: {
-      console.warn(`[Bot] Unknown state "${session.state}" for ${phone} — resetting to MENU`);
+    default:
+      console.warn(`[Bot] Unknown state "${session.state}" for ${phone} — resetting`);
+      session.resetFlow();
       session.state = 'MENU';
       await session.save();
-      await messages.sendMainMenu(phone, session.state);
-    }
+      await messages.sendWelcomeMenu(phone, session.state);
   }
+}
+
+// ─────────────────────────────────────────────────────────────
+//  MENU — category selection
+// ─────────────────────────────────────────────────────────────
+
+async function handleMenu(session, parsed) {
+  const { phone } = parsed;
+  const selected = parsed.listRowId || parsed.buttonId || '';
+
+  if (selected === 'expert') {
+    return handleExpertHandoff(session, phone, 'menu_request');
+  }
+
+  // Also accept a typed category name — plenty of users type instead
+  // of tapping, and bouncing them to a fallback loses the lead.
+  let flowId = FLOWS[selected] && !FLOWS[selected].hidden ? selected : null;
+  if (!flowId && parsed.text) {
+    const t = parsed.text.toLowerCase().trim();
+    const hit = Object.values(FLOWS).find(
+      (f) => !f.hidden && (f.menu.title.toLowerCase() === t || f.label.toLowerCase() === t)
+    );
+    if (hit) flowId = hit.id;
+  }
+
+  if (!flowId) {
+    await messages.sendFallback(phone, session.state);
+    await messages.sendWelcomeMenu(phone, session.state);
+    return;
+  }
+
+  await startFlow(session, phone, flowId);
+}
+
+async function startFlow(session, phone, flowId) {
+  const flow = engine.getFlow(flowId);
+  if (!flow) {
+    console.error(`[Bot] startFlow called with unknown flow "${flowId}"`);
+    return messages.sendWelcomeMenu(phone, session.state);
+  }
+
+  session.state = 'FLOW';
+  session.flowId = flowId;
+  session.stepIndex = engine.nextStepIndex(flow, session.answers || {}, 0);
+  session.invalidAttempts = 0;
+  session.awaitingTypedMobile = false;
+  await session.save();
+
+  await sendCurrentStep(session, phone);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  FLOW — the question engine
+// ─────────────────────────────────────────────────────────────
+
+async function handleFlow(session, parsed) {
+  const { phone } = parsed;
+  const flow = engine.getFlow(session.flowId);
+
+  if (!flow) {
+    session.resetFlow();
+    session.state = 'MENU';
+    await session.save();
+    return messages.sendWelcomeMenu(phone, session.state);
+  }
+
+  const answers = session.answers || {};
+  const step = flow.steps[session.stepIndex];
+
+  if (!step) {
+    // Index somehow past the end — treat the flow as complete.
+    return showSummary(session, phone);
+  }
+
+  // "Use another number" was tapped: the next text is the mobile.
+  if (session.awaitingTypedMobile) {
+    const check = engine.VALIDATORS.mobile(parsed.text);
+    if (!check.ok) {
+      return handleInvalid(session, phone, flow, check.error);
+    }
+    session.awaitingTypedMobile = false;
+    session.invalidAttempts = 0;
+    session.setAnswer(step.key, check.value);
+    return advance(session, phone, flow);
+  }
+
+  const result = engine.interpret(flow, answers, session.stepIndex, {
+    ...parsed,
+    waNumber: phone,
+  });
+
+  switch (result.action) {
+    case 'control':
+      return handleControl(session, phone, flow, result.control);
+
+    case 'answer': {
+      session.invalidAttempts = 0;
+      session.setAnswer(step.key, result.value);
+
+      // Marketplace split hands off to a fresh flow so the step
+      // counter restarts at 1, per the doc's "counts separately".
+      if (typeof step.branchTo === 'function') {
+        const nextFlowId = step.branchTo(result.value);
+        if (nextFlowId && FLOWS[nextFlowId]) {
+          await session.save();
+          return startFlow(session, phone, nextFlowId);
+        }
+      }
+      return advance(session, phone, flow);
+    }
+
+    case 'multi_add': {
+      const current = Array.isArray(answers[step.key]) ? answers[step.key] : [];
+      if (!current.includes(result.value)) current.push(result.value);
+      session.setAnswer(step.key, current);
+      session.invalidAttempts = 0;
+      await session.save();
+      // Re-render the same step with the new tick mark.
+      return sendCurrentStep(session, phone);
+    }
+
+    case 'invalid':
+      return handleInvalid(session, phone, flow, result.error);
+
+    default:
+      return handleInvalid(
+        session, phone, flow,
+        "Sorry, I didn't catch that. Please pick one of the options below."
+      );
+  }
+}
+
+async function handleControl(session, phone, flow, control) {
+  const answers = session.answers || {};
+  const step = flow.steps[session.stepIndex];
+
+  if (control === 'restart') {
+    session.resetFlow();
+    session.state = 'MENU';
+    await session.save();
+    return messages.sendWelcomeMenu(phone, session.state);
+  }
+
+  if (control === 'back') {
+    const prev = engine.prevStepIndex(flow, answers, session.stepIndex);
+    if (prev === -1) {
+      // Already at the first question — Back means "leave the flow".
+      session.resetFlow();
+      session.state = 'MENU';
+      await session.save();
+      return messages.sendWelcomeMenu(phone, session.state);
+    }
+    // Clear the answer we're returning to so the user genuinely
+    // re-answers it rather than seeing a stale value on the summary.
+    session.clearAnswer(flow.steps[prev].key);
+    session.stepIndex = prev;
+    session.invalidAttempts = 0;
+    session.awaitingTypedMobile = false;
+    await session.save();
+    return sendCurrentStep(session, phone);
+  }
+
+  if (control === 'skip') {
+    if (step.required) {
+      return handleInvalid(session, phone, flow, 'This one is required — please answer to continue.');
+    }
+    session.clearAnswer(step.key);
+    session.invalidAttempts = 0;
+    return advance(session, phone, flow);
+  }
+
+  if (control === 'done') {
+    // Multi-select finished. An empty selection is a valid "None".
+    const chosen = Array.isArray(answers[step.key]) ? answers[step.key] : [];
+    session.setAnswer(step.key, chosen);
+    session.invalidAttempts = 0;
+    return advance(session, phone, flow);
+  }
+
+  if (control === 'mobile_other') {
+    session.awaitingTypedMobile = true;
+    await session.save();
+    return messages.sendAskTypedMobile(phone, session.state);
+  }
+
+  return handleInvalid(session, phone, flow, "I didn't understand that option.");
+}
+
+// Doc §10: re-prompt once on invalid entry, then offer
+// "Talk to an Expert" as the fallback rather than looping forever.
+async function handleInvalid(session, phone, flow, errorText) {
+  session.invalidAttempts = (session.invalidAttempts || 0) + 1;
+  await session.save();
+
+  if (session.invalidAttempts >= 2) {
+    await messages.sendStuckOffer(phone, session.state);
+    session.invalidAttempts = 0;
+    await session.save();
+    return;
+  }
+
+  await messages.sendValidationError(phone, errorText, session.state);
+  return sendCurrentStep(session, phone);
+}
+
+async function advance(session, phone, flow) {
+  const answers = session.answers || {};
+  const next = engine.nextStepIndex(flow, answers, session.stepIndex + 1);
+
+  if (next === -1) {
+    return showSummary(session, phone);
+  }
+
+  session.stepIndex = next;
+  await session.save();
+  return sendCurrentStep(session, phone);
+}
+
+async function sendCurrentStep(session, phone) {
+  const flow = engine.getFlow(session.flowId);
+  const instruction = engine.renderStep(flow, session.answers || {}, session.stepIndex, {
+    waNumber: phone,
+  });
+  return messages.sendStep(phone, instruction, session.state);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  SUMMARY — Doc §11
+// ─────────────────────────────────────────────────────────────
+
+async function showSummary(session, phone) {
+  const flow = engine.getFlow(session.flowId);
+  const summary = engine.buildSummary(flow, session.answers || {});
+
+  session.state = 'SUMMARY';
+  await session.save();
+
+  return messages.sendSummary(phone, summary, session.state);
+}
+
+async function handleSummary(session, parsed) {
+  const { phone } = parsed;
+  const tapped = parsed.listRowId || parsed.buttonId || '';
+  const upper = String(parsed.text || '').toUpperCase().trim();
+
+  if (tapped === 'ctl:submit' || upper === 'SUBMIT' || upper === 'YES') {
+    return submitLead(session, phone);
+  }
+
+  if (tapped === 'ctl:edit' || upper === 'EDIT') {
+    // Send them back to the first question of the same flow, keeping
+    // their answers so each step arrives pre-answered — retyping
+    // everything from scratch is what makes users abandon here.
+    const flow = engine.getFlow(session.flowId);
+    session.state = 'FLOW';
+    session.stepIndex = engine.nextStepIndex(flow, session.answers || {}, 0);
+    session.invalidAttempts = 0;
+    await session.save();
+    await messages.sendEditIntro(phone, session.state);
+    return sendCurrentStep(session, phone);
+  }
+
+  if (tapped === 'ctl:expert' || upper === 'EXPERT') {
+    return handleExpertHandoff(session, phone, 'summary_request');
+  }
+
+  await messages.sendFallback(phone, session.state);
+  const flow = engine.getFlow(session.flowId);
+  return messages.sendSummary(
+    phone,
+    engine.buildSummary(flow, session.answers || {}),
+    session.state
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Submission
+// ─────────────────────────────────────────────────────────────
+
+async function submitLead(session, phone) {
+  const flow = engine.getFlow(session.flowId);
+  const a = session.answers || {};
+
+  // Doc §9B: seller submissions are not a service lead — they go to
+  // a separate Marketplace Listings review queue.
+  if (flow.id === 'mp_seller') {
+    return submitListing(session, phone, flow, a);
+  }
+
+  const isBuyer = flow.id === 'mp_buyer';
+
+  const lead = new Lead({
+    name:          a.name || 'Unknown',
+    phone,
+    mobile:        a.mobile || phone,
+    email:         a.work_email || '',
+    businessName:  a.business_name || '',
+    city:          a.city || '',
+    flowId:        flow.id,
+    category:      flow.id,
+    categoryLabel: flow.label,
+    answers:       a,
+    // Doc §9A: "Not Sure – Suggest Based on My Needs" is tagged for
+    // manual curation and routed to the expert queue.
+    queue:         flow.queue || 'service_leads',
+    tags:          buildTags(flow, a),
+    status:        'new',
+  });
+  await lead.save();
+
+  sheets
+    .appendLead({ ...a, phone, flowId: flow.id, categoryLabel: flow.label, source: 'whatsapp_bot' })
+    .catch((e) => console.error('[Bot] Sheets append error (non-fatal):', e.message));
+
+  notifySales({ ...a, phone, categoryLabel: flow.label });
+
+  session.state = 'DONE';
+  await session.save();
+
+  if (isBuyer) {
+    // Doc §9A.1 buyer confirmation, with its own 4-hour SLA.
+    await messages.sendBuyerConfirmation(phone, session.state);
+  } else {
+    await messages.sendLeadSuccess(phone, flow.label, session.state);
+  }
+
+  console.log(`[Bot] ✅ Lead saved — ${a.name} | ${a.mobile || phone} | ${flow.label}`);
+
+  // Doc §9A: route the "not sure" buyer to a human after capture.
+  if (isBuyer && a.tool_category === 'not_sure') {
+    await handleExpertHandoff(session, phone, 'marketplace_curation', { silent: true });
+  }
+}
+
+async function submitListing(session, phone, flow, a) {
+  // Doc §9B duplicate check: same mobile + product name is an update
+  // request against the existing listing, not a new submission.
+  const mobile = a.mobile || phone;
+  const productName = (a.product_name || '').trim();
+
+  const existing = await Listing.findOne({
+    mobile,
+    productName: new RegExp(`^${escapeRegex(productName)}$`, 'i'),
+  });
+
+  if (existing) {
+    existing.updateRequests.push({
+      submittedAt: new Date(),
+      changes: a,
+    });
+    existing.status = 'update_requested';
+    await existing.save();
+
+    session.state = 'DONE';
+    await session.save();
+
+    await messages.sendListingDuplicate(phone, existing.productName, session.state);
+    console.log(`[Bot] ♻️  Listing update request — ${productName} | ${mobile}`);
+    return;
+  }
+
+  const listing = new Listing({
+    productName,
+    productCategory: a.product_category || '',
+    pricingPlan:     a.pricing_plan || '',
+    contactName:     a.name || '',
+    workEmail:       a.work_email || '',
+    mobile,
+    phone,
+    queue:           'marketplace_listings',
+    status:          'pending_review',
+    answers:         a,
+  });
+  await listing.save();
+
+  sheets
+    .appendLead({ ...a, phone, flowId: flow.id, categoryLabel: flow.label, source: 'whatsapp_marketplace_seller' })
+    .catch((e) => console.error('[Bot] Sheets append error (non-fatal):', e.message));
+
+  notifySales({ ...a, phone, name: a.name, categoryLabel: 'Marketplace Listing' });
+
+  session.state = 'DONE';
+  await session.save();
+
+  await messages.sendListingSuccess(phone, session.state);
+  console.log(`[Bot] 🏷️  Listing submitted — ${productName} | ${mobile}`);
+}
+
+function buildTags(flow, a) {
+  const tags = [];
+  if (flow.id === 'mp_buyer') {
+    if (a.tool_category) tags.push(`tool:${a.tool_category}`);
+    if (a.business_type) tags.push(`type:${a.business_type}`);
+    if (a.budget)        tags.push(`budget:${a.budget}`);
+    if (a.tool_category === 'not_sure') tags.push('needs_manual_curation');
+  }
+  if (a.entity_type === 'dpiit') tags.push('dpiit');
+  if (Array.isArray(a.addons)) a.addons.forEach((x) => tags.push(`addon:${x}`));
+  return tags;
+}
+
+// Fire-and-forget: a failed sales alert must never block the user's
+// success message or lose the lead, which is already in MongoDB.
+function notifySales(leadInfo) {
+  const salesNumber = process.env.SALES_WA_NUMBER;
+  if (!salesNumber) return;
+  msg91
+    .sendSalesAlert(salesNumber, leadInfo)
+    .catch((e) => console.error('[Bot] Sales alert error (non-fatal):', e.message));
+}
+
+// ─────────────────────────────────────────────────────────────
+//  DONE
+// ─────────────────────────────────────────────────────────────
+
+async function handleDone(session, parsed) {
+  const { phone } = parsed;
+  const tapped = parsed.listRowId || parsed.buttonId || '';
+
+  if (tapped === 'ctl:browse_more') {
+    session.resetFlow();
+    session.state = 'MENU';
+    await session.save();
+    return messages.sendWelcomeMenu(phone, session.state);
+  }
+
+  if (tapped === 'ctl:visit_web') {
+    const url = process.env.WEBSITE_URL || 'https://launcherdesk.in';
+    return messages.sendWebsite(phone, url, session.state);
+  }
+
+  if (tapped === 'ctl:expert') {
+    return handleExpertHandoff(session, phone, 'post_submit_request');
+  }
+
+  // Any other message after submission — back to the menu.
+  session.resetFlow();
+  session.state = 'MENU';
+  await session.save();
+  return messages.sendWelcomeMenu(phone, session.state);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Expert handoff
+// ─────────────────────────────────────────────────────────────
+
+async function handleExpertHandoff(session, phone, reason, opts = {}) {
+  const a = session.answers || {};
+  const flow = session.flowId ? engine.getFlow(session.flowId) : null;
+
+  session.botPaused = true;
+  session.state = 'HUMAN';
+  await session.save();
+
+  if (!opts.silent) {
+    await messages.sendExpertHandoff(phone, session.state);
+  }
+
+  notifySales({
+    name:          a.name || 'Unknown',
+    phone,
+    mobile:        a.mobile || phone,
+    email:         a.work_email || '',
+    businessName:  a.business_name || '',
+    city:          a.city || '',
+    categoryLabel: flow ? flow.label : 'General Enquiry',
+    reason,
+  });
+
+  console.log(`[Bot] 🙋 Expert handoff — ${phone} (${reason})`);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -288,14 +583,13 @@ async function handleInbound(parsed) {
 async function getOrCreate(phone) {
   let session = await Session.findOne({ phone });
   if (!session) {
-    session = new Session({ phone, state: 'NEW' });
+    session = new Session({ phone, state: 'MENU' });
     await session.save();
   }
+  if (!session.answers) session.answers = {};
   return session;
 }
 
-// Log an incoming message without ever throwing — logging must
-// never break the conversation flow.
 async function logIncomingSafe(phone, message, messageType, state) {
   try {
     await logger.logIncoming({ phone, message, messageType, state });
@@ -304,78 +598,8 @@ async function logIncomingSafe(phone, message, messageType, state) {
   }
 }
 
-// Log an outgoing message sent directly via msg91 (not routed
-// through a messages.js helper) without ever throwing.
-async function logOutgoingSafe(phone, message, messageType, state) {
-  try {
-    await logger.logOutgoing({ phone, message, messageType, state });
-  } catch (err) {
-    console.error('Logger Error:', err.message);
-  }
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-async function handleExpertHandoff(session, phone) {
-  session.botPaused = true;
-  session.state     = 'HUMAN';
-  await session.save();
-
-  await messages.sendExpertHandoff(phone, session.state);
-
-  // Notify sales team
-  const salesNumber = process.env.SALES_WA_NUMBER;
-  if (salesNumber) {
-    const leadInfo = {
-      name:          session.data.name || 'Unknown',
-      phone,
-      email:         session.data.email || '',
-      businessName:  session.data.businessName || '',
-      city:          session.data.city || '',
-      categoryLabel: session.data.categoryLabel || 'General Enquiry',
-    };
-    await msg91.sendSalesAlert(salesNumber, leadInfo);
-  }
-}
-
-async function saveLead(session, phone) {
-  const d = session.data;
-
-  // Save to MongoDB
-  const lead = new Lead({
-    name:          d.name,
-    phone,
-    email:         d.email,
-    businessName:  d.businessName,
-    city:          d.city,
-    category:      d.category,
-    categoryLabel: d.categoryLabel,
-  });
-  await lead.save();
-
-  // Append to Google Sheets (non-blocking — don't fail if Sheets is down)
-  sheets.appendLead({ ...d, phone, source: 'whatsapp_bot' }).catch((e) =>
-    console.error('[Bot] Sheets append error (non-fatal):', e.message)
-  );
-
-  // Notify sales team
-  const salesNumber = process.env.SALES_WA_NUMBER;
-  if (salesNumber) {
-    await msg91.sendSalesAlert(salesNumber, { ...d, phone }).catch((e) =>
-      console.error('[Bot] Sales alert error (non-fatal):', e.message)
-    );
-  }
-
-  // Update session state
-  session.state = 'DONE';
-  await session.save();
-
-  // Send success message to user
-  await messages.sendLeadSuccess(phone, d, session.state);
-
-  console.log(`[Bot] ✅ Lead saved — ${d.name} | ${phone} | ${d.categoryLabel}`);
-}
-
-function toTitleCase(str) {
-  return str.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
-}
-
-module.exports = { handleInbound };
+module.exports = { handleInbound, handleExpertHandoff, startFlow };

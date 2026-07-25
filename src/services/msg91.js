@@ -71,6 +71,16 @@ async function sendButtonMessage(to, bodyText, buttons, headerText, footerText) 
 // ── 4. Sales alert (TEMPLATE — uses BULK endpoint) ────────────
 async function sendSalesAlert(to, lead) {
   try {
+    const templateName =
+      process.env.TEMPLATE_ID_SALES_ALERT || process.env.TEMPLATE_NAME_SALES_ALERT;
+
+    // Fail loudly in the log rather than firing a request that MSG91
+    // will reject with an opaque error.
+    if (!templateName) {
+      console.error('[MSG91] No sales-alert template configured — set TEMPLATE_ID_SALES_ALERT in .env');
+      return null;
+    }
+
     const body = {
       integrated_number: FROM_NUMBER,
       content_type: 'template',
@@ -78,17 +88,26 @@ async function sendSalesAlert(to, lead) {
         messaging_product: 'whatsapp',
         type: 'template',
         template: {
-          name: process.env.TEMPLATE_NAME_SALES_ALERT,
+          // BUGFIX: this read TEMPLATE_NAME_SALES_ALERT, but .env
+          // defines TEMPLATE_ID_SALES_ALERT — so the template name
+          // was always undefined and every sales alert failed
+          // silently. Both names are accepted now so neither the old
+          // nor the new .env spelling can break it again.
+          name: process.env.TEMPLATE_ID_SALES_ALERT || process.env.TEMPLATE_NAME_SALES_ALERT,
           language: { code: 'en', policy: 'deterministic' },
           to_and_components: [{
             to: [to],
             components: {
-              body_1: { type: 'text', value: lead.name },
-              body_2: { type: 'text', value: lead.phone },
-              body_3: { type: 'text', value: lead.email || 'Not provided' },
-              body_4: { type: 'text', value: lead.businessName || 'Not provided' },
+              // Falls back across old and new field names so the
+              // template keeps working regardless of which shape the
+              // caller passes, and never sends `undefined` (which
+              // MSG91 rejects for the whole message).
+              body_1: { type: 'text', value: lead.name || 'Unknown' },
+              body_2: { type: 'text', value: lead.mobile || lead.phone || 'Not provided' },
+              body_3: { type: 'text', value: lead.email || lead.work_email || 'Not provided' },
+              body_4: { type: 'text', value: lead.businessName || lead.business_name || 'Not provided' },
               body_5: { type: 'text', value: lead.city || 'Not provided' },
-              body_6: { type: 'text', value: lead.categoryLabel },
+              body_6: { type: 'text', value: lead.categoryLabel || 'General Enquiry' },
             },
           }],
         },

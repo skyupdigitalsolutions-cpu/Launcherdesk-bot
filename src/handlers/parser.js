@@ -75,18 +75,26 @@ function parseInbound(body) {
   }
 
   // ── Plain text message ────────────────────────────────────
- const textBody =
-  entry?.text ||
-  entry?.body ||
-  entry?.message?.body ||
-  entry?.text?.body ||
-  "";
-  
+  // BUGFIX: the original chain started with `entry?.text`. When a
+  // provider sends text as an object ({ body: "hi" }) that object is
+  // truthy, so the chain stopped there and the later `entry?.text?.body`
+  // was never reached — the typeof guard below then blanked it to "".
+  // MSG91 currently sends a plain string so it worked by luck; any
+  // Cloud API-shaped payload silently produced empty text.
+  // Unwrapping the object form first makes both shapes work.
+  const candidates = [
+    typeof entry?.text === 'string' ? entry.text : entry?.text?.body,
+    typeof entry?.body === 'string' ? entry.body : entry?.body?.text,
+    entry?.message?.text?.body,
+    entry?.message?.body,
+    entry?.content,
+  ];
+  const textBody = candidates.find((c) => typeof c === 'string' && c.length > 0) || '';
 
   return {
     phone,
     type:     'text',
-    text:     (typeof textBody === 'string' ? textBody : '').trim(),
+    text:     textBody.trim(),
     buttonId: null,
     listRowId: null,
   };

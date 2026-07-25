@@ -33,16 +33,35 @@ async function appendLead(lead) {
     const auth   = getAuth();
     const sheets = google.sheets({ version: 'v4', auth });
 
+    // The flow engine stores answers in snake_case (business_name,
+    // work_email); older callers used camelCase. Accepting both keeps
+    // this working either way instead of silently writing blank cells.
+    const businessName = lead.businessName || lead.business_name || lead.product_name || '';
+    const email        = lead.email || lead.work_email || '';
+    const mobile       = lead.mobile || lead.phone || '';
+
+    // Sub-service: the most specific thing the user picked. Without
+    // this the sales team sees "Business Registration" with no clue
+    // whether it's an LLP or a Trust.
+    const subService =
+      lead.entity_type || lead.license_type || lead.finance_service ||
+      lead.it_need || lead.legal_service || lead.intl_need ||
+      lead.office_need || lead.tool_category || lead.product_category || '';
+
     const row = [
-      lead.name,
+      lead.name || 'Unknown',
       `'${lead.phone}`,           // prefix ' so Sheets treats as text, not number
-      lead.email        || '',
-      lead.businessName || '',
+      email,
+      businessName,
       lead.city         || '',
       lead.categoryLabel,
       lead.source       || 'whatsapp_bot',
       'New',
       new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+      // Appended columns — existing sheet columns keep their positions
+      subService,
+      `'${mobile}`,
+      Array.isArray(lead.addons) ? lead.addons.join(', ') : '',
     ];
 
     const result = await sheets.spreadsheets.values.append({

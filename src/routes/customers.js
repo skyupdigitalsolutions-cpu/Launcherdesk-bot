@@ -19,10 +19,20 @@ router.get('/', async (req, res) => {
 
     const filter = {};
     if (search) {
+      // Stage 2 renamed Session.data → Session.answers. Querying the
+      // old paths would have returned zero name/email matches silently
+      // (Mongo just doesn't match a nonexistent path — no error), so
+      // dashboard search would have looked broken with no clue why.
+      // Old paths are kept in the $or so any pre-migration documents
+      // still turn up.
       filter.$or = [
-        { phone:        { $regex: search, $options: 'i' } },
-        { 'data.name':  { $regex: search, $options: 'i' } },
-        { 'data.email': { $regex: search, $options: 'i' } },
+        { phone:              { $regex: search, $options: 'i' } },
+        { 'answers.name':     { $regex: search, $options: 'i' } },
+        { 'answers.work_email': { $regex: search, $options: 'i' } },
+        { 'answers.business_name': { $regex: search, $options: 'i' } },
+        { 'answers.city':     { $regex: search, $options: 'i' } },
+        { 'data.name':        { $regex: search, $options: 'i' } },
+        { 'data.email':       { $regex: search, $options: 'i' } },
       ];
     }
 

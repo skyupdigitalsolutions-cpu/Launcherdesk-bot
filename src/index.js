@@ -16,6 +16,7 @@ const { parseInbound }  = require('./handlers/parser');
 const { handleInbound } = require('./handlers/stateMachine');
 const { pauseBot, resumeBot } = require('./services/botControl');
 const { setIO } = require('./socket');
+const reminders = require('./services/reminders');
 
 const dashboardRoutes     = require('./routes/dashboard');
 const customerRoutes      = require('./routes/customers');
@@ -40,7 +41,6 @@ const io = new Server(httpServer, {
 setIO(io);
 
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 app.use(express.urlencoded({ extended: true }));
 
 // ── Health check (Render/Railway ping to prevent cold start) ──
@@ -152,6 +152,9 @@ mongoose
       console.log(`[Server] LauncherDesk bot running on port ${PORT} ✅`);
       console.log(`[Server] Webhook URL: POST /webhook/whatsapp`);
       console.log(`[Server] Socket.IO ready`);
+
+      // Doc §10: 10-minute nudge + 24-hour abandoned-session archive
+      reminders.start();
     });
   })
   .catch((err) => {
