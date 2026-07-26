@@ -253,7 +253,7 @@ function renderStep(flow, answers, index, opts = {}) {
       kind: 'buttons',
       body: `${prompt}\n\n_Type your 10-digit number below_`,
       buttons: [{ id: 'ctl:back', title: 'Back' }],
-      footer: header,
+      footer: 'Type MENU to start over',
     };
   }
 
@@ -282,7 +282,9 @@ function renderStep(flow, answers, index, opts = {}) {
     kind: 'buttons',
     body: `${prompt}\n\n${typeHint}`,
     buttons: textButtons.length ? textButtons : [{ id: 'ctl:restart', title: 'Start Over' }],
-    footer: header,
+    // `header` already carries "Step 3 of 5" at the top of the bubble;
+    // repeating it in the footer printed the counter twice.
+    footer: 'Type MENU to start over',
   };
 }
 

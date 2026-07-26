@@ -435,6 +435,28 @@ console.log('── Flow intro message ──');
   console.log(`   ✓ intro lists steps, marks optional, respects skips (${normal.count} vs DPIIT ${dpiit.count})`);
 }
 
+
+// ── Step counter must not be printed twice ─────────────────────
+// The header already shows "Step 3 of 5" at the top of the bubble;
+// putting it in the footer too printed it once above and once below.
+console.log('── No duplicate step counter ──');
+{
+  let dupes = 0;
+  for (const [id, flow] of Object.entries(FLOWS)) {
+    flow.steps.forEach((step, i) => {
+      const r = engine.renderStep(flow, {}, i, { waNumber: '919876543210' });
+      const inHeader = r.header && /Step \d+ of \d+/.test(r.header);
+      const inFooter = r.footer && /Step \d+ of \d+/.test(r.footer);
+      const inBody   = /Step \d+ of \d+/.test(r.body);
+      const places = [inHeader, inFooter, inBody].filter(Boolean).length;
+      if (places > 1) dupes++;
+      ok(places <= 1, `${id} step ${i + 1}: step counter appears in ${places} places`);
+      ok(inHeader || inBody, `${id} step ${i + 1}: step counter missing entirely`);
+    });
+  }
+  console.log(`   ${dupes === 0 ? '✓' : '✗'} counter shown exactly once per step`);
+}
+
 // ── Results ────────────────────────────────────────────────────
 console.log('\n' + '═'.repeat(58));
 if (fail === 0) {

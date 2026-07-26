@@ -159,7 +159,10 @@ async function startFlow(session, phone, flowId) {
   // reads as a false restart.
   if (!flow.hidden) {
     const intro = engine.buildIntro(flow, session.answers || {});
+    session.awaitingIntroAck = true;
+    await session.save();
     await messages.sendFlowIntro(phone, intro.text, session.state);
+    return;   // question 1 waits for "Let's Start"
   }
 
   await sendCurrentStep(session, phone);
@@ -198,6 +201,15 @@ async function handleFlow(session, parsed) {
     session.invalidAttempts = 0;
     session.setAnswer(step.key, check.value);
     return advance(session, phone, flow);
+  }
+
+  // Waiting on "Let's Start" after the intro. Any reply moves on —
+  // if the user types instead of tapping, showing question 1 is still
+  // the right response, and being strict here would just strand them.
+  if (session.awaitingIntroAck) {
+    session.awaitingIntroAck = false;
+    await session.save();
+    return sendCurrentStep(session, phone);
   }
 
   // Response to the "continue or start over?" prompt sent after a

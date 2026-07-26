@@ -42,6 +42,12 @@ const sessionSchema = new mongoose.Schema(
     // Set while waiting for a typed mobile after "Use another"
     awaitingTypedMobile: { type: Boolean, default: false },
 
+    // True between sending the flow intro and the user tapping
+    // "Let's Start". Firing the intro and question 1 together made
+    // the button meaningless and pushed the intro off screen before
+    // it could be read.
+    awaitingIntroAck: { type: Boolean, default: false },
+
     // ── Human takeover / opt-out ────────────────────────────
     botPaused: { type: Boolean, default: false },
     optedOut:  { type: Boolean, default: false },
@@ -102,6 +108,7 @@ sessionSchema.methods.resetFlow = function () {
   this.answers = {};
   this.invalidAttempts = 0;
   this.awaitingTypedMobile = false;
+  this.awaitingIntroAck = false;
   this.reminderSentAt = null;
   this.markModified('answers');
   return this;
