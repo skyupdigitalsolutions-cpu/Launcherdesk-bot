@@ -59,7 +59,10 @@ const STEP_NAME = {
 const STEP_MOBILE = {
   key: 'mobile',
   label: 'Mobile Number',
-  prompt: 'Last one — which number should our expert call?',
+  // Doc §2–§9 wording, verbatim. The pre-fill confirmation below is a
+  // UX adaptation, but the question the user reads is exactly the
+  // doc's — there was no reason to reword it as well.
+  prompt: "What's your mobile number?",
   input: 'mobile_confirm',
   required: true,
   validate: 'mobile',

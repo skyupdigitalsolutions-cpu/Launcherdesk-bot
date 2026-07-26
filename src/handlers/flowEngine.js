@@ -239,7 +239,7 @@ function renderStep(flow, answers, index, opts = {}) {
       return {
         ...base,
         kind: 'buttons',
-        body: `${prompt}\n\n\u{1F4F1} *${guess.value}*`,
+        body: `${prompt}\n\nWe have this one from WhatsApp:\n\u{1F4F1} *${guess.value}*`,
         buttons: [
           { id: 'ctl:mobile_yes', title: 'Yes, use this' },
           { id: 'ctl:mobile_other', title: 'Use another' },
