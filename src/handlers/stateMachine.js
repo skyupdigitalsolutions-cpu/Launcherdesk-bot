@@ -153,6 +153,15 @@ async function startFlow(session, phone, flowId) {
   session.awaitingTypedMobile = false;
   await session.save();
 
+  // Tell the user what's coming before asking anything. Branch flows
+  // (the marketplace buyer/seller split) skip this — the user has
+  // already seen an intro for the parent category and a second one
+  // reads as a false restart.
+  if (!flow.hidden) {
+    const intro = engine.buildIntro(flow, session.answers || {});
+    await messages.sendFlowIntro(phone, intro.text, session.state);
+  }
+
   await sendCurrentStep(session, phone);
 }
 
@@ -196,7 +205,8 @@ async function handleFlow(session, parsed) {
   // never mistaken for an answer to the current question.
   const tappedRaw = parsed.listRowId || parsed.buttonId || '';
   const upperRaw = String(parsed.text || '').toUpperCase().trim();
-  if (tappedRaw === 'ctl:resume' || upperRaw === 'CONTINUE') {
+  if (tappedRaw === 'ctl:resume' || upperRaw === 'CONTINUE'
+      || tappedRaw === 'ctl:begin' || upperRaw === "LET'S START") {
     return sendCurrentStep(session, phone);
   }
   if (tappedRaw === 'ctl:restart_flow' || upperRaw === 'START OVER') {
@@ -309,7 +319,14 @@ async function handleControl(session, phone, flow, control) {
   }
 
   if (control === 'done') {
-    // Multi-select finished. An empty selection is a valid "None".
+    // "Done" only means anything on a multi-select step. Arriving
+    // anywhere else it is a stale tap on the add-ons message — which
+    // is exactly how a submitted lead ended up with an empty Name.
+    // Previously this stored [] and advanced, silently losing the field.
+    if (step.input !== 'multi') {
+      await messages.sendStaleTapWarning(phone, 'Done', session.state);
+      return sendCurrentStep(session, phone);
+    }
     const chosen = Array.isArray(answers[step.key]) ? answers[step.key] : [];
     session.setAnswer(step.key, chosen);
     session.invalidAttempts = 0;

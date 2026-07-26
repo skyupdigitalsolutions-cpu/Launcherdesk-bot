@@ -248,17 +248,41 @@ function renderStep(flow, answers, index, opts = {}) {
       };
     }
     // Couldn't derive a valid number from the WhatsApp id — just ask.
-    return { ...base, kind: 'text', body: `${prompt}\n\nPlease type your 10-digit mobile number.` };
+    return {
+      ...base,
+      kind: 'buttons',
+      body: `${prompt}\n\n_Type your 10-digit number below_`,
+      buttons: [{ id: 'ctl:back', title: 'Back' }],
+      footer: header,
+    };
   }
 
   // ── Free text ──────────────────────────────────────────────
-  const hints = [];
-  if (canGoBack) hints.push('BACK');
-  if (!step.required) hints.push('SKIP');
+  // Rendered as an INTERACTIVE message, not plain text.
+  //
+  // In production, plain-text sends via MSG91 were not being
+  // delivered to the handset while interactive ones always arrived.
+  // A question the user never sees is worse than any other bug here:
+  // they sit waiting, then re-tap a stale button, which corrupts the
+  // answer. Attaching a control turns every question into an
+  // interactive payload, which is the path known to work.
+  const textButtons = [];
+  if (!step.required) textButtons.push({ id: 'ctl:skip', title: 'Skip' });
+  if (canGoBack)      textButtons.push({ id: 'ctl:back', title: 'Back' });
+
+  const typeHint = {
+    name:   '_Type your full name below_',
+    city:   '_Type your city below_',
+    email:  '_Type your email below_',
+    mobile: '_Type your 10-digit number below_',
+  }[step.validate] || '_Type your answer below_';
+
   return {
     ...base,
-    kind: 'text',
-    body: `*${header}*\n\n${prompt}` + (hints.length ? `\n\n_Type ${hints.join(' or ')} anytime._` : ''),
+    kind: 'buttons',
+    body: `${prompt}\n\n${typeHint}`,
+    buttons: textButtons.length ? textButtons : [{ id: 'ctl:restart', title: 'Start Over' }],
+    footer: header,
   };
 }
 
@@ -440,6 +464,35 @@ function buildSummary(flow, answers) {
   return lines.join('\n');
 }
 
+
+// ─────────────────────────────────────────────────────────────
+//  Flow intro — "here's what I'll need"
+//
+//  Sent once when a category is chosen, before the first question.
+//  On WhatsApp the user cannot see how long a form is, so without
+//  this they have no idea whether they are answering 2 questions or
+//  20. Showing the list up front sets expectations, reduces mid-flow
+//  drop-off, and makes a silent moment feel like a pause rather than
+//  a broken bot.
+// ─────────────────────────────────────────────────────────────
+function buildIntro(flow, answers = {}) {
+  const visible = visibleSteps(flow, answers);
+  const items = visible.map((s, i) => {
+    const optional = s.required === false ? ' _(optional)_' : '';
+    return `${i + 1}. ${s.label}${optional}`;
+  });
+  return {
+    count: visible.length,
+    label: flow.label,
+    lines: items,
+    text:
+      `\u{1F4CB} *${flow.label}*\n\n` +
+      `I'll need ${visible.length} quick details:\n\n` +
+      items.join('\n') +
+      `\n\n_Takes about a minute. You can type BACK anytime to change an answer._`,
+  };
+}
+
 module.exports = {
   getFlow,
   visibleSteps,
@@ -450,6 +503,7 @@ module.exports = {
   renderStep,
   interpret,
   buildSummary,
+  buildIntro,
   VALIDATORS,
   titleCase,
 };

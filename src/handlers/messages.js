@@ -268,6 +268,18 @@ async function sendStaleTapWarning(phone, tappedTitle, state) {
   return result;
 }
 
+
+// ── Flow intro: what we're about to ask ───────────────────────
+// Sent as an interactive message (not plain text) because plain-text
+// sends were not reaching handsets in production.
+async function sendFlowIntro(phone, introText, state) {
+  const result = await msg91.sendButtonMessage(
+    phone, introText, [{ id: 'ctl:begin', title: "Let's Start" }]
+  );
+  await logOutgoingSafe(phone, introText, 'interactive', state);
+  return result;
+}
+
 module.exports = {
   sendWelcomeMenu,
   sendStep,
@@ -286,6 +298,7 @@ module.exports = {
   sendOptOutConfirm,
   sendOptInConfirm,
   sendFallback,
+  sendFlowIntro,
   sendResumeOrRestart,
   sendStaleTapWarning,
   // Kept so any older dashboard/route code that imports it won't crash

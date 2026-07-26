@@ -377,6 +377,64 @@ console.log('── Production bug regressions ──');
   console.log('   ✓ stale taps rejected, greetings caught, real answers unaffected');
 }
 
+
+// ── No question may render as plain text ───────────────────────
+// Plain-text sends were not being delivered by MSG91 in production,
+// so any step that renders as kind:'text' is an invisible question.
+console.log('── Every question must be interactive ──');
+{
+  let plain = [];
+  for (const [id, flow] of Object.entries(FLOWS)) {
+    flow.steps.forEach((step, i) => {
+      const r = engine.renderStep(flow, {}, i, { waNumber: '919876543210' });
+      if (r.kind === 'text') plain.push(`${id} step ${i + 1} (${step.key})`);
+      ok(r.kind !== 'text', `${id} step ${i + 1} (${step.key}) renders as plain text — will not be delivered`);
+      // Interactive payloads still have to respect the platform caps
+      if (r.kind === 'buttons') {
+        ok(r.buttons.length >= 1 && r.buttons.length <= 3,
+          `${id} step ${i + 1}: ${r.buttons.length} buttons (must be 1-3)`);
+        r.buttons.forEach((b) => ok(b.title.length <= 20,
+          `${id} step ${i + 1}: button "${b.title}" is ${b.title.length} chars (max 20)`));
+      }
+    });
+  }
+  console.log(`   ${plain.length === 0 ? '✓' : '✗'} all steps interactive${plain.length ? ': ' + plain.join(', ') : ''}`);
+}
+
+// ── Stray "Done" must not wipe a text answer ───────────────────
+// A second tap on the add-ons Done button landed on the name step,
+// stored [] and advanced — producing a lead with an empty Name.
+console.log('── Stray Done on a text step ──');
+{
+  const flow = FLOWS.biz_reg;
+  const nameIndex = flow.steps.findIndex((s) => s.key === 'name');
+  const addonsIndex = flow.steps.findIndex((s) => s.key === 'addons');
+  ok(flow.steps[nameIndex].input !== 'multi', 'name step must not be multi');
+  ok(flow.steps[addonsIndex].input === 'multi', 'addons step must be multi');
+  const r = engine.interpret(flow, {}, nameIndex, { text: 'Done' });
+  ok(r.action === 'control' && r.control === 'done',
+    'Done is still recognised as a control; the state machine must reject it off-multi');
+  console.log('   ✓ Done routed as a control, guarded in handleControl');
+}
+
+// ── Flow intro ─────────────────────────────────────────────────
+console.log('── Flow intro message ──');
+{
+  for (const [id, flow] of Object.entries(FLOWS)) {
+    if (flow.hidden) continue;
+    const intro = engine.buildIntro(flow, {});
+    ok(intro.count === engine.visibleSteps(flow, {}).length, `${id} intro count wrong`);
+    ok(intro.text.length <= 1024, `${id} intro is ${intro.text.length} chars (WhatsApp body max 1024)`);
+    ok(intro.lines.length === intro.count, `${id} intro line count mismatch`);
+  }
+  // Conditional skips must shrink the intro too
+  const dpiit = engine.buildIntro(FLOWS.biz_reg, { entity_type: 'dpiit' });
+  const normal = engine.buildIntro(FLOWS.biz_reg, {});
+  ok(dpiit.count === normal.count - 1, `DPIIT intro should list one fewer step (${dpiit.count} vs ${normal.count})`);
+  ok(!dpiit.text.includes('Stage'), 'DPIIT intro must not list the skipped Stage question');
+  console.log(`   ✓ intro lists steps, marks optional, respects skips (${normal.count} vs DPIIT ${dpiit.count})`);
+}
+
 // ── Results ────────────────────────────────────────────────────
 console.log('\n' + '═'.repeat(58));
 if (fail === 0) {
