@@ -585,7 +585,8 @@ async function handleDone(session, parsed) {
   }
 
   if (tapped === 'ctl:visit_web' || upper === 'VISIT WEBSITE') {
-    const url = process.env.WEBSITE_URL || 'https://launcherdesk.in';
+    // Falls back to the live site if WEBSITE_URL isn't set in Railway.
+    const url = process.env.WEBSITE_URL || 'https://www.launcherdesk.com/';
     return messages.sendWebsite(phone, url, session.state);
   }
 

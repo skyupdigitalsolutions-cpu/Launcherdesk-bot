@@ -19,6 +19,27 @@ async function logOutgoingSafe(phone, message, messageType, state) {
   }
 }
 
+
+// ─────────────────────────────────────────────────────────────
+//  Every outbound message goes out as INTERACTIVE.
+//
+//  In production, MSG91 plain-text sends were accepted by the API but
+//  never reached the handset, while interactive messages always
+//  arrived. A validation error the user cannot see is worse than no
+//  validation at all — they retype the same wrong value into silence.
+//  So notices carry at least one button and travel the path that works.
+//
+//  WhatsApp caps buttons at 3 and titles at 20 chars.
+// ─────────────────────────────────────────────────────────────
+async function sendNotice(phone, text, buttons, state, footer) {
+  const btns = (buttons && buttons.length ? buttons : [{ id: 'ctl:browse_more', title: 'Main Menu' }])
+    .slice(0, 3)
+    .map((b) => ({ id: b.id, title: b.title.slice(0, 20) }));
+  const result = await msg91.sendButtonMessage(phone, text, btns, undefined, footer);
+  await logOutgoingSafe(phone, text, 'interactive', state);
+  return result;
+}
+
 // ── Doc §1: Welcome + category list ───────────────────────────
 async function sendWelcomeMenu(phone, state) {
   const body =
@@ -65,9 +86,7 @@ async function sendStep(phone, instruction, state) {
 // ── Validation error (Doc §10) ────────────────────────────────
 async function sendValidationError(phone, errorText, state) {
   const text = `\u26A0\uFE0F ${errorText}`;
-  const result = await msg91.sendText(phone, text);
-  await logOutgoingSafe(phone, text, 'text', state);
-  return result;
+  return sendNotice(phone, text, [{ id: 'ctl:back', title: 'Back' }], state);
 }
 
 // Second consecutive failure — stop looping, offer a human.
@@ -88,9 +107,7 @@ async function sendAskTypedMobile(phone, state) {
   const text =
     'No problem \u2014 please type the 10-digit mobile number our expert should call.\n\n' +
     '_Example: 9876543210_';
-  const result = await msg91.sendText(phone, text);
-  await logOutgoingSafe(phone, text, 'text', state);
-  return result;
+  return sendNotice(phone, text, [{ id: 'ctl:back', title: 'Back' }], state);
 }
 
 // ── Doc §11: Summary card ─────────────────────────────────────
@@ -112,9 +129,7 @@ async function sendSummary(phone, summaryText, state) {
 
 async function sendEditIntro(phone, state) {
   const text = "\u270F\uFE0F No problem \u2014 let's go through it again. Your previous answers are saved.";
-  const result = await msg91.sendText(phone, text);
-  await logOutgoingSafe(phone, text, 'text', state);
-  return result;
+  return sendNotice(phone, text, [{ id: 'ctl:begin', title: 'Continue' }], state);
 }
 
 // ── Doc §12: Success ──────────────────────────────────────────
@@ -190,9 +205,7 @@ async function sendInactivityReminder(phone, state) {
     "\u{1F44B} Still there?\n\n" +
     "You're almost done \u2014 just reply to the last question and we'll get your request submitted.\n\n" +
     '_Type MENU to start over._';
-  const result = await msg91.sendText(phone, text);
-  await logOutgoingSafe(phone, text, 'text', state);
-  return result;
+  return sendNotice(phone, text, [{ id: 'ctl:resume', title: 'Continue' }, { id: 'ctl:restart_flow', title: 'Start Over' }], state);
 }
 
 // ── Expert handoff ────────────────────────────────────────────
@@ -201,16 +214,25 @@ async function sendExpertHandoff(phone, state) {
     '\u{1F4AC} *Connecting you with our team...*\n\n' +
     'A LauncherDesk expert will message you shortly.\n\n' +
     'Thank you for your patience! \u{1F64F}';
-  const result = await msg91.sendText(phone, text);
-  await logOutgoingSafe(phone, text, 'text', state);
-  return result;
+  return sendNotice(phone, text, [{ id: 'ctl:browse_more', title: 'Main Menu' }], state);
 }
 
 async function sendWebsite(phone, url, state) {
-  const text = `\u{1F310} Visit us at: ${url}\n\nFeel free to message us anytime! \u{1F44B}`;
-  const result = await msg91.sendText(phone, text);
-  await logOutgoingSafe(phone, text, 'text', state);
-  return result;
+  // URL sits on its own line so WhatsApp renders it as a tappable
+  // link. Sent as an interactive message because plain text does not
+  // reach the handset — the previous version was invisible, so tapping
+  // "Visit Website" appeared to do nothing at all.
+  const text =
+    '\u{1F310} *LauncherDesk*\n\n' +
+    'Explore all our services here:\n' +
+    `${url}\n\n` +
+    'Feel free to message us anytime! \u{1F44B}';
+  return sendNotice(
+    phone,
+    text,
+    [{ id: 'ctl:browse_more', title: 'Browse Services' }],
+    state
+  );
 }
 
 // ── Opt-out / opt-in ──────────────────────────────────────────
@@ -218,25 +240,19 @@ async function sendOptOutConfirm(phone, state) {
   const text =
     "You've been unsubscribed from LauncherDesk messages. \u2705\n\n" +
     'Reply *START* anytime to opt back in.';
-  const result = await msg91.sendText(phone, text);
-  await logOutgoingSafe(phone, text, 'text', state);
-  return result;
+  return sendNotice(phone, text, [{ id: 'ctl:browse_more', title: 'Main Menu' }], state);
 }
 
 async function sendOptInConfirm(phone, state) {
   const text =
     "Welcome back! \u{1F44B} You're now subscribed to LauncherDesk updates.\n\n" +
     'Type *MENU* to explore our services.';
-  const result = await msg91.sendText(phone, text);
-  await logOutgoingSafe(phone, text, 'text', state);
-  return result;
+  return sendNotice(phone, text, [{ id: 'ctl:browse_more', title: 'Main Menu' }], state);
 }
 
 async function sendFallback(phone, state) {
   const text = "I didn't quite catch that. \u{1F914}\n\nLet me show you the menu \u2014 just pick a service:";
-  const result = await msg91.sendText(phone, text);
-  await logOutgoingSafe(phone, text, 'text', state);
-  return result;
+  return sendNotice(phone, text, [{ id: 'ctl:browse_more', title: 'Main Menu' }], state);
 }
 
 
@@ -263,9 +279,7 @@ async function sendStaleTapWarning(phone, tappedTitle, state) {
   const text =
     `That looks like the *${tappedTitle}* button from an earlier question. \u{1F914}\n\n` +
     'Let me ask the current one again:';
-  const result = await msg91.sendText(phone, text);
-  await logOutgoingSafe(phone, text, 'text', state);
-  return result;
+  return sendNotice(phone, text, [{ id: 'ctl:back', title: 'Back' }], state);
 }
 
 
