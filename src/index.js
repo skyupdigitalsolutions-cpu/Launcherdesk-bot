@@ -21,6 +21,9 @@ const reminders = require('./services/reminders');
 const dashboardRoutes     = require('./routes/dashboard');
 const customerRoutes      = require('./routes/customers');
 const conversationRoutes  = require('./routes/conversations');
+// Admin console + the shared secret middleware used to gate the
+// /api routes below, which were previously unauthenticated.
+const { router: adminRouter, requireSecret } = require('./routes/admin');
 
 // ─────────────────────────────────────────────────────────────
 //  LauncherDesk WhatsApp Bot — Express Server
@@ -139,9 +142,14 @@ app.get('/admin/leads', async (req, res) => {
 });
 
 // ── Dashboard REST API (customers, conversations, stats) ──────
-app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/customers', customerRoutes);
-app.use('/api/conversations', conversationRoutes);
+app.use('/admin', adminRouter);
+
+// SECURITY: these three were previously unauthenticated — anyone with
+// the URL could read the full customer list, names and phone numbers
+// included. They now require the same ADMIN_SECRET as everything else.
+app.use('/api/dashboard', requireSecret, dashboardRoutes);
+app.use('/api/customers', requireSecret, customerRoutes);
+app.use('/api/conversations', requireSecret, conversationRoutes);
 
 // ── Connect to MongoDB then start server ──────────────────────
 mongoose

@@ -11,7 +11,7 @@ Module.prototype.require = function(p){
   if (p.includes('services/logger')) return { logIncoming:async()=>{}, logOutgoing:async()=>{} };
   return orig.apply(this, arguments);
 };
-const m = require('/home/claude/build/src/handlers/messages.js');
+const m = require('../src/handlers/messages.js');
 
 (async () => {
   const cases = [
@@ -53,5 +53,7 @@ const m = require('/home/claude/build/src/handlers/messages.js');
   }
   console.log(bad === 0 ? `\n✅ all ${cases.length} outbound messages are interactive and within limits`
                         : `\n❌ ${bad} problem(s)`);
-  process.exit(bad === 0 ? 0 : 1);
+  // exitCode rather than process.exit(): on Windows, exiting inside an
+  // async callback can truncate buffered stdout before it's flushed.
+  process.exitCode = bad === 0 ? 0 : 1;
 })();
