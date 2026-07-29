@@ -42,6 +42,11 @@ const sessionSchema = new mongoose.Schema(
     // Set while waiting for a typed mobile after "Use another"
     awaitingTypedMobile: { type: Boolean, default: false },
 
+    // Flow the user asked to switch to, held until they confirm.
+    // Stored rather than inferred so the confirmation can't be
+    // misread as an answer to the question still on screen.
+    pendingSwitchTo: { type: String, default: null },
+
     // True between sending the flow intro and the user tapping
     // "Let's Start". Firing the intro and question 1 together made
     // the button meaningless and pushed the intro off screen before
@@ -109,6 +114,7 @@ sessionSchema.methods.resetFlow = function () {
   this.invalidAttempts = 0;
   this.awaitingTypedMobile = false;
   this.awaitingIntroAck = false;
+  this.pendingSwitchTo = null;
   this.reminderSentAt = null;
   this.markModified('answers');
   return this;

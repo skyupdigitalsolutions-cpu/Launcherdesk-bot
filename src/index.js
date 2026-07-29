@@ -17,6 +17,7 @@ const { handleInbound } = require('./handlers/stateMachine');
 const { pauseBot, resumeBot } = require('./services/botControl');
 const { setIO } = require('./socket');
 const reminders = require('./services/reminders');
+const sheetQueue = require('./services/sheetQueue');
 
 const dashboardRoutes     = require('./routes/dashboard');
 const customerRoutes      = require('./routes/customers');
@@ -163,6 +164,7 @@ mongoose
 
       // Doc §10: 10-minute nudge + 24-hour abandoned-session archive
       reminders.start();
+      sheetQueue.start();   // batched Sheets mirror, off the reply path
     });
   })
   .catch((err) => {

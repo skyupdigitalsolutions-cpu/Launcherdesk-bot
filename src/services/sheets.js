@@ -18,11 +18,56 @@ const PHONE_COLUMN_RANGE = `${SHEET_TAB}!B:B`;
 const CONVERSATION_TAB   = 'Conversations';   // Tab name inside the spreadsheet
 const CONVERSATION_RANGE = `${CONVERSATION_TAB}!A:F`;
 
+// ─────────────────────────────────────────────────────────────
+//  Private key normalisation
+//
+//  This is the fix for:
+//    [Sheets] Failed to append: error:1E08010C:DECODER routines::unsupported
+//
+//  That error is OpenSSL refusing to parse the PEM. It happens because
+//  the key arrives in a different shape depending on where it was set:
+//
+//    .env file        one line, literal backslash-n sequences
+//    Railway UI       real newlines, sometimes wrapped in quotes
+//    copy/paste       real newlines, sometimes with \r, sometimes
+//                     with the header/footer on the same line as body
+//
+//  Handling only one of those (the old code handled only the first)
+//  breaks the others silently. This normalises all of them.
+// ─────────────────────────────────────────────────────────────
+function normalisePrivateKey(raw) {
+  if (!raw) return null;
+  let key = String(raw).trim();
+
+  // Strip surrounding quotes that shells and dashboards add
+  if ((key.startsWith('"') && key.endsWith('"')) ||
+      (key.startsWith("'") && key.endsWith("'"))) {
+    key = key.slice(1, -1);
+  }
+
+  // Literal \n → real newline, and normalise Windows line endings
+  key = key.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  // Some pastes lose the newlines around the PEM markers, which makes
+  // the body unparseable even though every character is present.
+  key = key
+    .replace(/-----BEGIN ([A-Z ]+)-----\s*/, '-----BEGIN $1-----\n')
+    .replace(/\s*-----END ([A-Z ]+)-----/, '\n-----END $1-----');
+
+  if (!key.endsWith('\n')) key += '\n';
+  return key;
+}
+
 // Build auth client from service account env vars
 function getAuth() {
+  const key = normalisePrivateKey(process.env.GOOGLE_PRIVATE_KEY);
+  if (!key) throw new Error('GOOGLE_PRIVATE_KEY is not set');
+  if (!key.includes('BEGIN')) {
+    throw new Error('GOOGLE_PRIVATE_KEY does not look like a PEM key (no BEGIN marker)');
+  }
   return new google.auth.JWT({
     email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-    key:   process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    key,
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 }
@@ -167,7 +212,41 @@ async function updateLeadActivity(phone, updates = {}) {
   }
 }
 
+
+// ─────────────────────────────────────────────────────────────
+//  Batched conversation append
+//
+//  One API call for many rows instead of one call per message.
+//  Called only by services/sheetQueue.js, off the reply path.
+// ─────────────────────────────────────────────────────────────
+async function appendConversationBatch(rows) {
+  if (!rows || rows.length === 0) return null;
+
+  const auth   = getAuth();
+  const api    = google.sheets({ version: 'v4', auth });
+  const values = rows.map((d) => [
+    new Date(d.at || Date.now()).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    `'${d.phone}`,                 // leading quote keeps Sheets from mangling the number
+    d.direction || '',
+    d.messageType || 'text',
+    d.botState || '',
+    d.message || '',
+  ]);
+
+  const res = await api.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: CONVERSATION_RANGE,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values },
+  });
+  console.log(`[Sheets] Wrote ${rows.length} conversation row(s)`);
+  return res.data;
+}
+
 module.exports = {
+  appendConversationBatch,
+  normalisePrivateKey,
   appendLead,
   appendConversation,
   updateLeadActivity,

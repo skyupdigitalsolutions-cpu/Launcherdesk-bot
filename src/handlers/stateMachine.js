@@ -29,7 +29,8 @@ async function handleInbound(parsed) {
   const upper = String(text || '').toUpperCase().trim();
 
   const session = await getOrCreate(phone);
-  await logIncomingSafe(phone, text, type, session.state);
+  logIncomingSafe(phone, text, type, session.state);
+  stampIncoming(session, text);
 
   // Any inbound message clears a pending reminder — they're active again.
   if (session.reminderSentAt) session.reminderSentAt = null;
@@ -203,6 +204,32 @@ async function handleFlow(session, parsed) {
     return advance(session, phone, flow);
   }
 
+  // Answer to a pending topic-switch offer. Checked first so the
+  // reply can never be mistaken for an answer to the open question.
+  if (session.pendingSwitchTo) {
+    const target = session.pendingSwitchTo;
+    const tapped = parsed.listRowId || parsed.buttonId || '';
+    const said = String(parsed.text || '').toUpperCase().trim();
+
+    if (tapped === 'ctl:switch_yes' || said === 'SWITCH' || said === 'YES') {
+      session.pendingSwitchTo = null;
+      if (target === 'expert') {
+        return handleExpertHandoff(session, phone, 'topic_switch');
+      }
+      // Fresh start on the new flow. Answers from the abandoned one
+      // are dropped deliberately — carrying "office_size" into a
+      // legal enquiry would put nonsense on the summary card.
+      session.resetFlow();
+      await session.save();
+      return startFlow(session, phone, target);
+    }
+
+    // Anything else means stay. Re-ask so they aren't left hanging.
+    session.pendingSwitchTo = null;
+    await session.save();
+    return sendCurrentStep(session, phone);
+  }
+
   // Waiting on "Let's Start" after the intro. Any reply moves on —
   // if the user types instead of tapping, showing question 1 is still
   // the right response, and being strict here would just strand them.
@@ -277,6 +304,17 @@ async function handleFlow(session, parsed) {
     // Text identical to a button from an earlier question. Re-ask the
     // current question rather than storing the stale value. Does not
     // count towards invalidAttempts — the user didn't get it wrong.
+    case 'topic_switch': {
+      const target = result.flowId;
+      const targetLabel = target === 'expert'
+        ? 'Talk to an Expert'
+        : (FLOWS[target] && FLOWS[target].label) || target;
+      session.pendingSwitchTo = target;
+      await session.save();
+      await messages.sendTopicSwitchOffer(phone, flow.label, targetLabel, session.state);
+      return;
+    }
+
     case 'stale_tap': {
       await session.save();
       await messages.sendStaleTapWarning(phone, result.tapped, session.state);
@@ -657,12 +695,25 @@ async function getOrCreate(phone) {
   return session;
 }
 
-async function logIncomingSafe(phone, message, messageType, state) {
-  try {
-    await logger.logIncoming({ phone, message, messageType, state });
-  } catch (err) {
-    console.error('Logger Error:', err.message);
-  }
+// Fire-and-forget. Awaiting this used to add seconds to every reply;
+// the message is already safe in MongoDB by the time it matters, and
+// a logging failure must never stop the bot from answering.
+function logIncomingSafe(phone, message, messageType, state) {
+  logger.logIncoming({ phone, message, messageType, state })
+    .catch((err) => console.error('Logger Error:', err.message));
+}
+
+// The logger no longer touches Session — it was loading a second copy
+// of the same document and racing the state machine's writes. These
+// fields feed the admin console's conversation list, so they are set
+// here on the session instance we already hold, and persist with the
+// save that was happening anyway. Zero extra round trips.
+function stampIncoming(session, message) {
+  if (!session.conversation) session.conversation = {};
+  session.conversation.lastIncomingMessage = message;
+  session.conversation.lastDirection = 'Incoming';
+  session.conversation.unreadCount = (session.conversation.unreadCount || 0) + 1;
+  session.conversation.totalMessages = (session.conversation.totalMessages || 0) + 1;
 }
 
 function escapeRegex(s) {

@@ -457,6 +457,57 @@ console.log('── No duplicate step counter ──');
   console.log(`   ${dupes === 0 ? '✓' : '✗'} counter shown exactly once per step`);
 }
 
+
+// ── Topic switching mid-flow ───────────────────────────────────
+console.log('── Topic switch detection ──');
+{
+  const flow = FLOWS.biz_reg;
+  const cityIdx = flow.steps.findIndex((s) => s.key === 'city');
+  const nameIdx = flow.steps.findIndex((s) => s.key === 'name');
+  const entityIdx = 0;
+
+  // Naming another service should offer a switch, not become the answer
+  const switchCases = [
+    ['IT Services',                        'it_services'],
+    ['Office Setup',                       'office'],
+    ['Legal & Compliance',                 'legal'],
+    ['actually i need legal & compliance',  'legal'],
+    ['Finance & Accounts',                 'finance'],
+    ['Talk to an Expert',                  'expert'],
+  ];
+  for (const [text, expected] of switchCases) {
+    const r = engine.interpret(flow, {}, cityIdx, { text });
+    ok(r.action === 'topic_switch' && r.flowId === expected,
+      `"${text}" should offer switch to ${expected}, got ${r.action}/${r.flowId}`);
+  }
+
+  // Real answers must be untouched
+  for (const city of ['Bengaluru', 'Mumbai', 'New Delhi', 'Pune', 'Kochi']) {
+    const r = engine.interpret(flow, {}, cityIdx, { text: city });
+    ok(r.action === 'answer', `city "${city}" must still be accepted, got ${r.action}`);
+  }
+  ok(engine.interpret(flow, {}, nameIdx, { text: 'Rahul Sharma' }).action === 'answer',
+    'real name must still be accepted');
+
+  // A legitimate option in the CURRENT step must win over any switch
+  const optCheck = engine.interpret(FLOWS.it_services, {}, 0, { text: 'CRM' });
+  ok(optCheck.action === 'answer' && optCheck.value === 'crm',
+    'CRM inside IT Services must be an answer, not a switch');
+
+  // Short strings must not trigger switches by accident
+  for (const t of ['GST', 'ISO', 'IEC', 'UK', 'no']) {
+    const r = engine.interpret(flow, {}, cityIdx, { text: t });
+    ok(r.action !== 'topic_switch', `short token "${t}" must not trigger a topic switch`);
+  }
+
+  // Must never offer to switch to the flow you're already in
+  const same = engine.interpret(flow, {}, cityIdx, { text: 'Business Registration' });
+  ok(same.action !== 'topic_switch' || same.flowId !== 'biz_reg',
+    'must not offer to switch to the current flow');
+
+  console.log('   ✓ switches offered, real answers and in-flow options unaffected');
+}
+
 // ── Results ────────────────────────────────────────────────────
 console.log('\n' + '═'.repeat(58));
 if (fail === 0) {

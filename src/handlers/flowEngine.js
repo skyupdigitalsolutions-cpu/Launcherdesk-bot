@@ -339,6 +339,40 @@ function matchesOtherStepOption(flow, index, typed) {
   return null;
 }
 
+// ─────────────────────────────────────────────────────────────
+//  Topic switching
+//
+//  A user halfway through Business Registration may type "actually I
+//  need GST" or just "IT Services". Without this check that text is
+//  accepted as whatever free-text question is open — so the lead
+//  arrives with City: "IT Services" and the person's real intent is
+//  lost. Matching against the service list lets the bot offer to
+//  switch instead of silently mis-filing the answer.
+//
+//  Deliberately checked AFTER the current step's own options, so a
+//  legitimate answer always wins. "CRM" inside IT Services stays an
+//  answer; "CRM" typed during Office Setup is a switch offer.
+// ─────────────────────────────────────────────────────────────
+function matchesCategory(typed, currentFlowId) {
+  const t = String(typed || '').trim().toLowerCase();
+  if (t.length < 3) return null;
+
+  for (const flow of Object.values(FLOWS)) {
+    if (flow.hidden || flow.id === currentFlowId) continue;
+
+    const names = [flow.label, flow.menu && flow.menu.title].filter(Boolean).map((n) => n.toLowerCase());
+    if (names.includes(t)) return flow.id;
+
+    // Also catch a natural sentence containing the service name,
+    // e.g. "actually i need legal & compliance". Requires the full
+    // name so short words can't trigger it by accident.
+    if (names.some((n) => n.length >= 6 && t.includes(n))) return flow.id;
+  }
+
+  if (t === 'talk to an expert' || t.includes('talk to an expert')) return 'expert';
+  return null;
+}
+
 function interpret(flow, answers, index, input) {
   const step = flow.steps[index];
   const tapped = input.listRowId || input.buttonId || '';
@@ -397,6 +431,9 @@ function interpret(flow, answers, index, input) {
       if (step.input === 'multi') return { action: 'multi_add', value: match.id };
       return { action: 'answer', value: match.id, label: match.title };
     }
+    // Not an option here — did they name a different service?
+    const switchTo = matchesCategory(typed, flow.id);
+    if (switchTo) return { action: 'topic_switch', flowId: switchTo, typed };
     return { action: 'unrecognised' };
   }
 
@@ -414,6 +451,11 @@ function interpret(flow, answers, index, input) {
     if (stale) {
       return { action: 'stale_tap', tapped: stale };
     }
+
+    // Naming a different service here means they want to change
+    // topic, not that their city is called "IT Services".
+    const switchTo = matchesCategory(typed, flow.id);
+    if (switchTo) return { action: 'topic_switch', flowId: switchTo, typed };
 
     const validator = VALIDATORS[step.validate] || VALIDATORS.free;
     const result = validator(typed);

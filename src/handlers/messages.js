@@ -11,12 +11,13 @@ const { MENU_ROWS } = require('../config/flows');
 //  without anyone touching conversation logic.
 // ─────────────────────────────────────────────────────────────
 
-async function logOutgoingSafe(phone, message, messageType, state) {
-  try {
-    await logger.logOutgoing({ phone, message, messageType, state });
-  } catch (err) {
-    console.error('Logger Error:', err.message);
-  }
+// Fire-and-forget: see the note in services/logger.js. Awaiting the
+// outgoing log added a second Sheets round trip after every single
+// message the bot sent.
+function logOutgoingSafe(phone, message, messageType, state) {
+  logger.logOutgoing({ phone, message, messageType, state })
+    .catch((err) => console.error('Logger Error:', err.message));
+  return Promise.resolve();
 }
 
 
@@ -294,6 +295,26 @@ async function sendFlowIntro(phone, introText, state) {
   return result;
 }
 
+
+// ── Topic switch offer ────────────────────────────────────────
+// Asked rather than assumed. Switching silently would throw away the
+// answers they already gave; ignoring it would file "IT Services" as
+// their city. Two taps, no data lost either way.
+async function sendTopicSwitchOffer(phone, currentLabel, newLabel, state) {
+  const text =
+    `Looks like you'd rather talk about *${newLabel}*.\n\n` +
+    `You're partway through *${currentLabel}* — switch over, or finish this one first?`;
+  return sendNotice(
+    phone,
+    text,
+    [
+      { id: 'ctl:switch_yes', title: 'Switch' },
+      { id: 'ctl:switch_no',  title: 'Stay here' },
+    ],
+    state
+  );
+}
+
 module.exports = {
   sendWelcomeMenu,
   sendStep,
@@ -313,6 +334,7 @@ module.exports = {
   sendOptInConfirm,
   sendFallback,
   sendFlowIntro,
+  sendTopicSwitchOffer,
   sendResumeOrRestart,
   sendStaleTapWarning,
   // Kept so any older dashboard/route code that imports it won't crash
