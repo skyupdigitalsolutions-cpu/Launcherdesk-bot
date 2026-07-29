@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "node test/flows.test.js && node test/messages.test.js && node test/admin.test.js && node test/latency.test.js && node test/doc-audit.js",
+    "test": "node test/flows.test.js && node test/messages.test.js && node test/admin.test.js && node test/concurrency.test.js && node test/latency.test.js && node test/doc-audit.js",
     "audit": "node test/doc-audit.js"
   },
   "dependencies": {

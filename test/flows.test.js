@@ -458,54 +458,93 @@ console.log('── No duplicate step counter ──');
 }
 
 
-// ── Topic switching mid-flow ───────────────────────────────────
-console.log('── Topic switch detection ──');
+// ── Service change mid-flow ────────────────────────────────────
+console.log('── Service change detection ──');
 {
   const flow = FLOWS.biz_reg;
   const cityIdx = flow.steps.findIndex((s) => s.key === 'city');
   const nameIdx = flow.steps.findIndex((s) => s.key === 'name');
-  const entityIdx = 0;
 
-  // Naming another service should offer a switch, not become the answer
-  const switchCases = [
+  // Confident: names a specific service
+  const confident = [
     ['IT Services',                        'it_services'],
     ['Office Setup',                       'office'],
     ['Legal & Compliance',                 'legal'],
     ['actually i need legal & compliance',  'legal'],
-    ['Finance & Accounts',                 'finance'],
+    ['i need a website',                   'it_services'],
+    ['bookkeeping',                        'finance'],
+    ['cctv',                               'office'],
+    ['dubai',                              'intl'],
+    ['fssai',                              'licenses'],
     ['Talk to an Expert',                  'expert'],
   ];
-  for (const [text, expected] of switchCases) {
+  for (const [text, expected] of confident) {
     const r = engine.interpret(flow, {}, cityIdx, { text });
-    ok(r.action === 'topic_switch' && r.flowId === expected,
-      `"${text}" should offer switch to ${expected}, got ${r.action}/${r.flowId}`);
+    ok(r.action === 'topic_switch' && r.type === 'flow' && r.flowId === expected,
+      `"${text}" should switch to ${expected}, got ${r.action}/${r.type}/${r.flowId}`);
   }
 
-  // Real answers must be untouched
-  for (const city of ['Bengaluru', 'Mumbai', 'New Delhi', 'Pune', 'Kochi']) {
+  // Ambiguous: must show the menu, never guess
+  const ambiguous = [
+    'change service', 'change the service', 'different service',
+    'i need gst instead', 'actually i want trademark',
+  ];
+  for (const text of ambiguous) {
+    const r = engine.interpret(flow, {}, cityIdx, { text });
+    const isMenuOffer = (r.action === 'topic_switch' && r.type === 'menu')
+      || (r.action === 'control' && r.control === 'change_service');
+    ok(isMenuOffer, `"${text}" should offer the menu, got ${r.action}/${r.type}`);
+  }
+
+  // Real answers untouched
+  for (const city of ['Bengaluru', 'Mumbai', 'New Delhi', 'Pune', 'Kochi', 'Hyderabad']) {
     const r = engine.interpret(flow, {}, cityIdx, { text: city });
     ok(r.action === 'answer', `city "${city}" must still be accepted, got ${r.action}`);
   }
   ok(engine.interpret(flow, {}, nameIdx, { text: 'Rahul Sharma' }).action === 'answer',
     'real name must still be accepted');
 
-  // A legitimate option in the CURRENT step must win over any switch
-  const optCheck = engine.interpret(FLOWS.it_services, {}, 0, { text: 'CRM' });
-  ok(optCheck.action === 'answer' && optCheck.value === 'crm',
+  // Current step's own option always wins
+  const inFlow = engine.interpret(FLOWS.it_services, {}, 0, { text: 'CRM' });
+  ok(inFlow.action === 'answer' && inFlow.value === 'crm',
     'CRM inside IT Services must be an answer, not a switch');
+  const website = engine.interpret(FLOWS.it_services, {}, 0, { text: 'Website' });
+  ok(website.action === 'answer' && website.value === 'website',
+    'Website inside IT Services must be an answer');
 
-  // Short strings must not trigger switches by accident
-  for (const t of ['GST', 'ISO', 'IEC', 'UK', 'no']) {
+  // Bare ambiguous tokens must NOT hijack an answer
+  for (const t of ['GST', 'ISO', 'IEC', 'UK', 'no', 'Registration']) {
     const r = engine.interpret(flow, {}, cityIdx, { text: t });
-    ok(r.action !== 'topic_switch', `short token "${t}" must not trigger a topic switch`);
+    ok(r.action !== 'topic_switch' || r.type !== 'flow',
+      `bare token "${t}" must not confidently switch service`);
   }
 
-  // Must never offer to switch to the flow you're already in
+  // Never offer to switch to the flow already in progress
   const same = engine.interpret(flow, {}, cityIdx, { text: 'Business Registration' });
-  ok(same.action !== 'topic_switch' || same.flowId !== 'biz_reg',
+  ok(!(same.action === 'topic_switch' && same.flowId === 'biz_reg'),
     'must not offer to switch to the current flow');
 
-  console.log('   ✓ switches offered, real answers and in-flow options unaffected');
+  console.log('   ✓ confident switches, ambiguous → menu, answers unaffected');
+}
+
+// ── Change Service is reachable without typing ──────────────────
+console.log('── Change Service control present ──');
+{
+  let missing = [];
+  for (const [id, flow] of Object.entries(FLOWS)) {
+    flow.steps.forEach((step, i) => {
+      const r = engine.renderStep(flow, {}, i, { waNumber: '919876543210' });
+      const ids = r.kind === 'list'
+        ? r.sections.flatMap((s) => s.rows.map((x) => x.id))
+        : (r.buttons || []).map((b) => b.id);
+      const reachable = ids.includes('ctl:change_service')
+        || ids.includes('ctl:restart')
+        || (r.footer || '').includes('MENU');
+      if (!reachable) missing.push(`${id}[${i}] (${step.key})`);
+      ok(reachable, `${id} step ${i + 1} (${step.key}) offers no way to change service`);
+    });
+  }
+  console.log(`   ${missing.length === 0 ? '✓' : '✗'} every step offers a route out${missing.length ? ': ' + missing.join(', ') : ''}`);
 }
 
 // ── Results ────────────────────────────────────────────────────

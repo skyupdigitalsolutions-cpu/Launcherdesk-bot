@@ -315,6 +315,26 @@ async function sendTopicSwitchOffer(phone, currentLabel, newLabel, state) {
   );
 }
 
+
+// ── Ambiguous service-change request ──────────────────────────
+// They want a different service but haven't said which, or named
+// something that belongs to several ("GST" spans three categories).
+// Showing the list is honest; guessing would be wrong most of the time.
+async function sendChangeServiceOffer(phone, currentLabel, state) {
+  const text =
+    'Happy to help with something else. \u{1F44D}\n\n' +
+    `You're partway through *${currentLabel}* — leave it and pick a different service?`;
+  return sendNotice(
+    phone,
+    text,
+    [
+      { id: 'ctl:show_menu',  title: 'Show Services' },
+      { id: 'ctl:switch_no',  title: 'Stay here' },
+    ],
+    state
+  );
+}
+
 module.exports = {
   sendWelcomeMenu,
   sendStep,
@@ -335,6 +355,7 @@ module.exports = {
   sendFallback,
   sendFlowIntro,
   sendTopicSwitchOffer,
+  sendChangeServiceOffer,
   sendResumeOrRestart,
   sendStaleTapWarning,
   // Kept so any older dashboard/route code that imports it won't crash

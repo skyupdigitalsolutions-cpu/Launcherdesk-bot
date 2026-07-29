@@ -172,6 +172,7 @@ function renderStep(flow, answers, index, opts = {}) {
     const controls = [];
     if (!step.required) controls.push({ id: 'ctl:skip', title: 'Skip', description: 'Leave this blank' });
     if (canGoBack)      controls.push({ id: 'ctl:back', title: 'Back', description: 'Previous question' });
+    controls.push({ id: 'ctl:change_service', title: 'Change Service', description: 'Pick a different service' });
     controls.push({ id: 'ctl:restart', title: 'Start Over', description: 'Return to main menu' });
 
     const room = WA_LIST_MAX_ROWS - rows.length;
@@ -228,7 +229,9 @@ function renderStep(flow, answers, index, opts = {}) {
       body,
       listButton: step.listButton || 'Select',
       sections: [{ title: 'Options', rows }],
-      footer: 'Pick as many as you need',
+      // Rows are taken up by the options plus Done, leaving no space
+      // for a Change Service row — so the escape hatch is named here.
+      footer: 'Type BACK or MENU anytime',
     };
   }
 
@@ -244,7 +247,7 @@ function renderStep(flow, answers, index, opts = {}) {
           { id: 'ctl:mobile_yes', title: 'Yes, use this' },
           { id: 'ctl:mobile_other', title: 'Use another' },
         ],
-        footer: 'Type BACK to change an answer',
+        footer: 'Type BACK or MENU anytime',
       };
     }
     // Couldn't derive a valid number from the WhatsApp id — just ask.
@@ -266,9 +269,12 @@ function renderStep(flow, answers, index, opts = {}) {
   // they sit waiting, then re-tap a stale button, which corrupts the
   // answer. Attaching a control turns every question into an
   // interactive payload, which is the path known to work.
+  // Room for three buttons; a visible "Change Service" means the user
+  // never has to guess the magic word to switch topic.
   const textButtons = [];
   if (!step.required) textButtons.push({ id: 'ctl:skip', title: 'Skip' });
   if (canGoBack)      textButtons.push({ id: 'ctl:back', title: 'Back' });
+  if (textButtons.length < 3) textButtons.push({ id: 'ctl:change_service', title: 'Change Service' });
 
   const typeHint = {
     name:   '_Type your full name below_',
@@ -315,6 +321,7 @@ const CONTROL_TITLES = {
   'yes, use this':    'mobile_yes',
   'use another':      'mobile_other',
   'back to menu':     'restart',
+  'change service':   'change_service',
 };
 
 // Bare greetings. MSG91 delivers button taps as plain text, and users
@@ -340,36 +347,100 @@ function matchesOtherStepOption(flow, index, typed) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  Topic switching
+//  Service-change intent
 //
-//  A user halfway through Business Registration may type "actually I
-//  need GST" or just "IT Services". Without this check that text is
-//  accepted as whatever free-text question is open — so the lead
-//  arrives with City: "IT Services" and the person's real intent is
-//  lost. Matching against the service list lets the bot offer to
-//  switch instead of silently mis-filing the answer.
+//  A user mid-flow may want a different service, and they will say so
+//  in whatever words come to mind — "IT Services", "i need a website",
+//  "change service", "actually gst". Requiring the exact category
+//  name means most of those land in whatever free-text field is open,
+//  so the lead arrives with City: "i need a website".
 //
-//  Deliberately checked AFTER the current step's own options, so a
-//  legitimate answer always wins. "CRM" inside IT Services stays an
-//  answer; "CRM" typed during Office Setup is a switch offer.
+//  Three outcomes:
+//    { type:'flow', flowId }  confident about which service
+//    { type:'menu' }          they want to change, but it's ambiguous
+//    null                     not a service-change at all
+//
+//  Ambiguous terms deliberately return 'menu' rather than a guess.
+//  "GST" appears under Licenses, under Finance as GST Filing, and as
+//  a Business Registration add-on; picking one would be wrong two
+//  times out of three, so the bot shows the list and lets them choose.
 // ─────────────────────────────────────────────────────────────
-function matchesCategory(typed, currentFlowId) {
+
+// Phrases that mean "I want something else" without naming it
+const CHANGE_PHRASES = [
+  'change service', 'change the service', 'change my service',
+  'different service', 'other service', 'another service',
+  'switch service', 'change topic', 'something else',
+  'change service please', 'wrong service', 'not this',
+];
+
+// Unambiguous service words → the flow that owns them
+const SERVICE_KEYWORDS = {
+  it_services: ['website', 'web site', 'ecommerce', 'e-commerce', 'mobile app',
+                'android app', 'ios app', 'seo', 'digital marketing',
+                'cloud hosting', 'hosting', 'erp'],
+  licenses:    ['fssai', 'food license', 'iso certification', 'shop license',
+                'trade license', 'msme', 'udyam'],
+  finance:     ['bookkeeping', 'book keeping', 'income tax return', 'itr',
+                'payroll', 'audit', 'cfo', 'accounting'],
+  legal:       ['roc filing', 'legal notice', 'contract review',
+                'agreement drafting', 'labour compliance', 'annual filing'],
+  office:      ['cctv', 'biometric', 'furniture', 'interior', 'office setup',
+                'networking', 'virtual office'],
+  intl:        ['dubai', 'uae', 'saudi', 'qatar', 'oman', 'singapore',
+                'business visa', 'overseas', 'expand abroad'],
+  biz_reg:     ['private limited', 'pvt ltd', 'llp', 'opc', 'one person company',
+                'partnership firm', 'proprietorship', 'ngo', 'trust',
+                'dpiit', 'startup india', 'company registration',
+                'register my company', 'incorporate'],
+  marketplace: ['software marketplace', 'list my software', 'find a tool',
+                'crm software', 'software listing'],
+};
+
+// Terms that legitimately belong to more than one service
+const AMBIGUOUS = ['gst', 'trademark', 'crm', 'clm', 'compliance', 'tax',
+                   'registration', 'license', 'certificate'];
+
+function detectServiceIntent(typed, currentFlowId) {
   const t = String(typed || '').trim().toLowerCase();
   if (t.length < 3) return null;
 
-  for (const flow of Object.values(FLOWS)) {
-    if (flow.hidden || flow.id === currentFlowId) continue;
-
-    const names = [flow.label, flow.menu && flow.menu.title].filter(Boolean).map((n) => n.toLowerCase());
-    if (names.includes(t)) return flow.id;
-
-    // Also catch a natural sentence containing the service name,
-    // e.g. "actually i need legal & compliance". Requires the full
-    // name so short words can't trigger it by accident.
-    if (names.some((n) => n.length >= 6 && t.includes(n))) return flow.id;
+  // "change service" and friends — they want out, but haven't said where to
+  if (CHANGE_PHRASES.some((p) => t === p || t.includes(p))) {
+    return { type: 'menu' };
   }
 
-  if (t === 'talk to an expert' || t.includes('talk to an expert')) return 'expert';
+  // Exact category name or label
+  for (const flow of Object.values(FLOWS)) {
+    if (flow.hidden || flow.id === currentFlowId) continue;
+    const names = [flow.label, flow.menu && flow.menu.title]
+      .filter(Boolean).map((n) => n.toLowerCase());
+    if (names.includes(t)) return { type: 'flow', flowId: flow.id };
+    if (names.some((n) => n.length >= 6 && t.includes(n))) {
+      return { type: 'flow', flowId: flow.id };
+    }
+  }
+
+  if (t === 'talk to an expert' || t.includes('talk to an expert')) {
+    return { type: 'flow', flowId: 'expert' };
+  }
+
+  // Unambiguous service keyword
+  for (const [flowId, words] of Object.entries(SERVICE_KEYWORDS)) {
+    if (flowId === currentFlowId) continue;
+    if (words.some((w) => t === w || t.includes(w))) {
+      return { type: 'flow', flowId };
+    }
+  }
+
+  // Ambiguous term — only treat as a change if it reads like a request
+  // rather than a bare answer, so a city called "Registration" isn't
+  // hijacked but "i need gst" is.
+  const looksLikeRequest = /\b(need|want|looking for|instead|actually|change|do you|can you|help with)\b/.test(t);
+  if (looksLikeRequest && AMBIGUOUS.some((w) => new RegExp(`\\b${w}\\b`).test(t))) {
+    return { type: 'menu' };
+  }
+
   return null;
 }
 
@@ -431,9 +502,9 @@ function interpret(flow, answers, index, input) {
       if (step.input === 'multi') return { action: 'multi_add', value: match.id };
       return { action: 'answer', value: match.id, label: match.title };
     }
-    // Not an option here — did they name a different service?
-    const switchTo = matchesCategory(typed, flow.id);
-    if (switchTo) return { action: 'topic_switch', flowId: switchTo, typed };
+    // Not an option here — did they ask for a different service?
+    const intent = detectServiceIntent(typed, flow.id);
+    if (intent) return { action: 'topic_switch', ...intent, typed };
     return { action: 'unrecognised' };
   }
 
@@ -452,10 +523,10 @@ function interpret(flow, answers, index, input) {
       return { action: 'stale_tap', tapped: stale };
     }
 
-    // Naming a different service here means they want to change
+    // Asking for a different service here means they want to change
     // topic, not that their city is called "IT Services".
-    const switchTo = matchesCategory(typed, flow.id);
-    if (switchTo) return { action: 'topic_switch', flowId: switchTo, typed };
+    const intent = detectServiceIntent(typed, flow.id);
+    if (intent) return { action: 'topic_switch', ...intent, typed };
 
     const validator = VALIDATORS[step.validate] || VALIDATORS.free;
     const result = validator(typed);

@@ -7,6 +7,7 @@ const sheets   = require('../services/sheets');
 const logger   = require('../services/logger');
 const engine   = require('./flowEngine');
 const { FLOWS } = require('../config/flows');
+const { runExclusive } = require('../services/lock');
 
 // ─────────────────────────────────────────────────────────────
 //  LauncherDesk Bot — State Machine (Phase 1)
@@ -24,7 +25,14 @@ const { FLOWS } = require('../config/flows');
 //  (Sheets, sales alerts). Adding a category needs no change here.
 // ─────────────────────────────────────────────────────────────
 
-async function handleInbound(parsed) {
+// Public entry point. Serialized per phone number so two rapid taps
+// (the Submit-then-Edit case seen in production) cannot both read the
+// same session state and both act on it.
+function handleInbound(parsed) {
+  return runExclusive(parsed.phone, () => handleInboundSerial(parsed));
+}
+
+async function handleInboundSerial(parsed) {
   const { phone, type, text, buttonId, listRowId } = parsed;
   const upper = String(text || '').toUpperCase().trim();
 
@@ -132,7 +140,17 @@ async function handleMenu(session, parsed) {
   }
 
   if (!flowId) {
-    await messages.sendFallback(phone, session.state);
+    // A stale control tap from an older bubble is not the user failing
+    // to understand — don't tell them they were unclear, just re-show
+    // the list.
+    const isStaleControl = selected.startsWith('ctl:') ||
+      ['CONTINUE', "LET'S START", 'LETS START', 'SUBMIT', 'EDIT', 'BACK',
+       'SKIP', 'DONE', 'STAY HERE', 'START OVER', 'VISIT WEBSITE',
+       'BROWSE SERVICES', 'MAIN MENU'].includes(upperText);
+
+    if (!isStaleControl) {
+      await messages.sendFallback(phone, session.state);
+    }
     await messages.sendWelcomeMenu(phone, session.state);
     return;
   }
@@ -210,6 +228,20 @@ async function handleFlow(session, parsed) {
     const target = session.pendingSwitchTo;
     const tapped = parsed.listRowId || parsed.buttonId || '';
     const said = String(parsed.text || '').toUpperCase().trim();
+
+    if (tapped === 'ctl:show_menu' || said === 'SHOW SERVICES' || target === 'MENU') {
+      // Only treat as confirmed if they actually said yes to it.
+      if (tapped === 'ctl:show_menu' || said === 'SHOW SERVICES'
+          || said === 'YES' || said === 'SWITCH') {
+        session.resetFlow();
+        session.state = 'MENU';
+        await session.save();
+        return messages.sendWelcomeMenu(phone, session.state);
+      }
+      session.pendingSwitchTo = null;
+      await session.save();
+      return sendCurrentStep(session, phone);
+    }
 
     if (tapped === 'ctl:switch_yes' || said === 'SWITCH' || said === 'YES') {
       session.pendingSwitchTo = null;
@@ -305,6 +337,14 @@ async function handleFlow(session, parsed) {
     // current question rather than storing the stale value. Does not
     // count towards invalidAttempts — the user didn't get it wrong.
     case 'topic_switch': {
+      // Ambiguous ("change service", or a term spanning categories):
+      // show the list rather than guessing which one they meant.
+      if (result.type === 'menu' || !result.flowId) {
+        session.pendingSwitchTo = 'MENU';
+        await session.save();
+        await messages.sendChangeServiceOffer(phone, flow.label, session.state);
+        return;
+      }
       const target = result.flowId;
       const targetLabel = target === 'expert'
         ? 'Talk to an Expert'
@@ -357,6 +397,12 @@ async function handleControl(session, phone, flow, control) {
     session.awaitingTypedMobile = false;
     await session.save();
     return sendCurrentStep(session, phone);
+  }
+
+  if (control === 'change_service') {
+    session.pendingSwitchTo = 'MENU';
+    await session.save();
+    return messages.sendChangeServiceOffer(phone, flow.label, session.state);
   }
 
   if (control === 'skip') {
@@ -644,10 +690,25 @@ async function handleDone(session, parsed) {
     return handleExpertHandoff(session, phone, 'post_submit_request');
   }
 
-  // Any other message after submission — back to the menu.
+  // Stale taps on buttons from EARLIER in the conversation. After a
+  // submission the chat is full of them ("Continue", "Let's Start",
+  // "Submit", "Edit"), and treating those as unrecognised produced a
+  // confusing "I didn't quite catch that" for a button the bot itself
+  // had sent. Quietly show the menu instead.
+  const STALE_AFTER_DONE = [
+    'CONTINUE', "LET'S START", 'LETS START', 'SUBMIT', 'EDIT',
+    'BACK', 'SKIP', 'DONE', 'NONE OF THESE', 'STAY HERE',
+    'YES, USE THIS', 'USE ANOTHER', 'START OVER', 'CHANGE SERVICE',
+  ];
+  const staleCtl = tapped.startsWith('ctl:') || STALE_AFTER_DONE.includes(upper);
+
   session.resetFlow();
   session.state = 'MENU';
   await session.save();
+  if (!staleCtl && parsed.text) {
+    // Genuinely unrecognised free text — worth acknowledging.
+    await messages.sendFallback(phone, session.state);
+  }
   return messages.sendWelcomeMenu(phone, session.state);
 }
 
