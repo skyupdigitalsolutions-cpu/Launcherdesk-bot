@@ -189,7 +189,7 @@ app.use('/api/conversations', requireSecret, conversationRoutes);
 
 // ── Connect to MongoDB then start server ──────────────────────
 mongoose
-  .connect(process.env.MONGO_URI)
+  .connect(process.env.MONGO_URI, { minPoolSize: 5, maxPoolSize: 20, serverSelectionTimeoutMS: 5000, socketTimeoutMS: 45000, compressors: ['zlib'] })
   .then(() => {
     console.log('[MongoDB] Connected ✅');
     httpServer.listen(PORT, () => {

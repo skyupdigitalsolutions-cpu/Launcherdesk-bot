@@ -1,4 +1,7 @@
 const axios = require('axios');
+const https = require('https');
+const keepAliveAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 30000, maxSockets: 50, maxFreeSockets: 10, timeout: 60000 });
+const http = axios.create({ httpsAgent: keepAliveAgent, timeout: 15000 });
 
 // TWO endpoints — this was the bug:
 //  SESSION_URL → text + interactive (buttons/list), works inside 24h window
@@ -20,7 +23,7 @@ async function sendSession(to, contentType, contentObject) {
     };
 
     const _t0 = Date.now();
-    const res = await axios.post(SESSION_URL, body, {
+    const res = await http.post(SESSION_URL, body, {
       // WITHOUT THIS, a slow or hung MSG91 request waits indefinitely.
       // Combined with the per-phone lock in services/lock.js, one hung
       // send blocks every later message from that user — observed as a
@@ -122,7 +125,7 @@ async function sendSalesAlert(to, lead) {
         },
       },
     };
-    const res = await axios.post(BULK_URL, body, {
+    const res = await http.post(BULK_URL, body, {
       timeout: 8000,   // see the note on SESSION_URL above
       headers: { authkey: AUTH_KEY, 'Content-Type': 'application/json' },
     });
