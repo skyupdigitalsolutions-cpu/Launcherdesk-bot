@@ -86,11 +86,30 @@ function requireTrustedOrigin(req, res, next) {
     const host = req.headers.host;
     const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
     if (origin === `${proto}://${host}`) return next();
-    return res.status(403).json({ error: 'Request blocked: unrecognised origin' });
+    return refuseOrigin(res, origin, allowed);
   }
 
   if (allowed.includes(origin)) return next();
-  return res.status(403).json({ error: 'Request blocked: unrecognised origin' });
+  return refuseOrigin(res, origin, allowed);
+}
+
+// Names the mismatch instead of just saying no.
+//
+// The bare "unrecognised origin" message cost real debugging time: the
+// cause is almost always an invisible difference — a trailing slash, an
+// http/https mix-up, or a Cloudflare Pages preview subdomain that isn't
+// on the list. Echoing both sides makes it self-diagnosing. The client
+// already knows its own origin, so this leaks nothing it doesn't have.
+function refuseOrigin(res, origin, allowed) {
+  const configured = allowed.length ? allowed.join(', ') : '(none — PORTAL_ORIGINS is not set)';
+  console.warn(`[Portal] Refused origin "${origin}". Allowed: ${configured}`);
+  return res.status(403).json({
+    error: 'Request blocked: this address is not on the allowed list',
+    detail: `Your browser sent "${origin}". The server allows: ${configured}. ` +
+            'These must match exactly — no trailing slash, and https vs http matters.',
+    received: origin,
+    allowed,
+  });
 }
 
 router.use(requireTrustedOrigin);
