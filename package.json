@@ -6,8 +6,13 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "node test/flows.test.js && node test/messages.test.js && node test/admin.test.js && node test/concurrency.test.js && node test/latency.test.js && node test/doc-audit.js",
-    "audit": "node test/doc-audit.js"
+    "test": "node test/flows.test.js && node test/messages.test.js && node test/admin.test.js && node test/concurrency.test.js && node test/latency.test.js && node test/portal.test.js && node test/segments.test.js && node test/cors.test.js && node test/doc-audit.js",
+    "audit": "node test/doc-audit.js",
+    "build:portal": "cd frontend && npm install && npm run build:embed",
+    "dev:portal": "cd frontend && npm run dev",
+    "admin": "node admin-setup.js",
+    "admin:status": "node admin-setup.js --status",
+    "admin:verify": "node admin-setup.js --verify"
   },
   "dependencies": {
     "axios": "^1.6.0",

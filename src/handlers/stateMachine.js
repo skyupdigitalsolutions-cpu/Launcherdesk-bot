@@ -29,7 +29,22 @@ const { runExclusive } = require('../services/lock');
 // (the Submit-then-Edit case seen in production) cannot both read the
 // same session state and both act on it.
 function handleInbound(parsed) {
-  return runExclusive(parsed.phone, () => handleInboundSerial(parsed));
+  const queuedAt = Date.now();
+  return runExclusive(parsed.phone, async () => {
+    const startedAt = Date.now();
+    const waited = startedAt - queuedAt;
+    try {
+      await handleInboundSerial(parsed);
+    } finally {
+      // Splits the total into queue wait vs actual work. If `waited` is
+      // large the delay is another message ahead of this one in the
+      // per-phone queue; if `work` is large it's Mongo or MSG91. Without
+      // this split, a slow reply is guesswork.
+      const work = Date.now() - startedAt;
+      const flag = (waited + work) > 2000 ? '  ⚠️ SLOW' : '';
+      console.log(`[Timing] ${parsed.phone} queue=${waited}ms work=${work}ms total=${waited + work}ms${flag}`);
+    }
+  });
 }
 
 async function handleInboundSerial(parsed) {

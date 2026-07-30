@@ -102,6 +102,40 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log('  ✗ ' + m); 
   ok(!scolded, 'a stale control tap must not produce "I didn\'t quite catch that"');
   console.log(`   ✓ no confused fallback for a button the bot itself sent`);
 
+
+  // ── A hung handler must not stall the next message forever ────
+  console.log('── Hung task does not block the queue indefinitely ──');
+  {
+    const { runExclusive } = require('../src/services/lock.js');
+    const t0 = Date.now();
+    // First task never resolves; the lock's timeout must release it.
+    const hung = runExclusive('999', () => new Promise(() => {})).catch(() => 'timed-out');
+    const behind = runExclusive('999', async () => 'ran');
+    const [a, b] = await Promise.all([hung, behind]);
+    const elapsed = Date.now() - t0;
+    ok(a === 'timed-out', 'hung task should be released by the timeout');
+    ok(b === 'ran', 'the queued message should still run afterwards');
+    ok(elapsed < 14000, `queued message waited ${elapsed}ms, expected under 14000ms`);
+    console.log(`   \u2713 released after ${elapsed}ms, next message ran (was: 25s ceiling)`);
+  }
+
+  // ── Serialization survives the Map cleanup ────────────────────
+  console.log('── Rapid messages stay serialized ──');
+  {
+    const { runExclusive, pendingCount } = require('../src/services/lock.js');
+    let concurrent = 0, maxConcurrent = 0;
+    const task = async () => {
+      concurrent++;
+      maxConcurrent = Math.max(maxConcurrent, concurrent);
+      await slow(20);
+      concurrent--;
+    };
+    await Promise.all(Array.from({ length: 8 }, () => runExclusive('888', task)));
+    ok(maxConcurrent === 1, `expected 1 at a time, saw ${maxConcurrent} running concurrently`);
+    ok(pendingCount() === 0, `lock map should drain, still holds ${pendingCount()}`);
+    console.log(`   \u2713 8 rapid messages, max ${maxConcurrent} concurrent, map drained`);
+  }
+
   console.log(fail === 0
     ? `\n✅ all ${pass} concurrency assertions passed`
     : `\n❌ ${fail} failed / ${pass} passed`);

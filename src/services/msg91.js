@@ -19,14 +19,23 @@ async function sendSession(to, contentType, contentObject) {
       ...contentObject,                 // { text: {...} } OR { interactive: {...} }
     };
 
+    const _t0 = Date.now();
     const res = await axios.post(SESSION_URL, body, {
+      // WITHOUT THIS, a slow or hung MSG91 request waits indefinitely.
+      // Combined with the per-phone lock in services/lock.js, one hung
+      // send blocks every later message from that user — observed as a
+      // 30-second reply. 8s is generous for an API that normally
+      // answers in under 400ms; failing fast and logging beats hanging.
+      timeout: 8000,
       headers: {
         authkey: AUTH_KEY,
         'Content-Type': 'application/json',
         accept: 'application/json',
       },
     });
-    console.log(`[MSG91] ${contentType} → ${to}:`, JSON.stringify(res.data).slice(0, 150));
+    // Timing included so a slow MSG91 API is visible in the logs
+    // rather than being mistaken for slowness in the bot.
+    console.log(`[MSG91] ${contentType} → ${to} in ${Date.now() - _t0}ms:`, JSON.stringify(res.data).slice(0, 150));
     return res.data;
   } catch (err) {
     console.error(`[MSG91] Error (${contentType}) → ${to}:`, JSON.stringify(err.response?.data || err.message));
@@ -114,6 +123,7 @@ async function sendSalesAlert(to, lead) {
       },
     };
     const res = await axios.post(BULK_URL, body, {
+      timeout: 8000,   // see the note on SESSION_URL above
       headers: { authkey: AUTH_KEY, 'Content-Type': 'application/json' },
     });
     console.log(`[MSG91] template → ${to}:`, JSON.stringify(res.data).slice(0, 150));

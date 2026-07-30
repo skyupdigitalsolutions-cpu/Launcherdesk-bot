@@ -26,8 +26,11 @@
 
 const chains = new Map();
 
-// Guard against a hung task pinning a phone's queue forever.
-const TASK_TIMEOUT = 25000;
+// Ceiling on how long one message may hold a phone's queue. Must stay
+// comfortably above the slowest legitimate handler (a few Mongo ops
+// plus one MSG91 send, ~1s) but low enough that a stuck task doesn't
+// strand the next message. MSG91 itself is capped at 8s per call.
+const TASK_TIMEOUT = 12000;
 
 function withTimeout(promise, ms, phone) {
   let timer;
@@ -53,20 +56,21 @@ function runExclusive(phone, task) {
     .then(() => withTimeout(Promise.resolve().then(task), TASK_TIMEOUT, phone));
 
   // Store a settled-either-way promise so the chain always advances.
-  chains.set(phone, next.catch(() => {}));
+  const settled = next.catch(() => {});
+  chains.set(phone, settled);
 
-  // Release the map entry once this phone's queue is fully drained,
-  // otherwise the Map grows once per unique number, forever.
-  next.catch(() => {}).finally(() => {
-    if (chains.get(phone) === undefined) return;
-    // Only clear if nothing else queued behind us in the meantime.
-    Promise.resolve().then(() => {
-      const current = chains.get(phone);
-      if (current && current === chains.get(phone)) {
-        // Compare by settling: if no new task was appended, drop it.
-        chains.delete(phone);
-      }
-    });
+  // Release the Map entry once this phone's queue is drained, or it
+  // grows by one per unique number and never shrinks.
+  //
+  // The identity check matters: if another message queued behind us
+  // while we ran, chains.get(phone) now holds THAT task's promise, and
+  // deleting it would drop the queue and lose serialization. The
+  // previous version compared chains.get(phone) against itself, which
+  // is always true, so it deleted unconditionally — meaning two rapid
+  // messages could still run in parallel. Capturing `settled` first is
+  // what makes the comparison meaningful.
+  settled.then(() => {
+    if (chains.get(phone) === settled) chains.delete(phone);
   });
 
   return next;

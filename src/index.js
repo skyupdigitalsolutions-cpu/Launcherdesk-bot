@@ -25,6 +25,8 @@ const conversationRoutes  = require('./routes/conversations');
 // Admin console + the shared secret middleware used to gate the
 // /api routes below, which were previously unauthenticated.
 const { router: adminRouter, requireSecret } = require('./routes/admin');
+// Portal: the email-login frontend for the client's team.
+const { router: portalRouter } = require('./routes/portal');
 
 // ─────────────────────────────────────────────────────────────
 //  LauncherDesk WhatsApp Bot — Express Server
@@ -143,6 +145,39 @@ app.get('/admin/leads', async (req, res) => {
 });
 
 // ── Dashboard REST API (customers, conversations, stats) ──────
+// ── Portal: API first, then the built React app ──────────────
+//
+// Order matters. The API router is mounted first so /portal/api/*
+// always resolves here; express.static then serves the Vite build's
+// hashed assets; finally any other /portal path falls through to
+// index.html so client-side navigation works on refresh.
+app.use('/portal', portalRouter);
+
+const portalDist = path.join(__dirname, '..', 'public', 'portal');
+app.use('/portal', express.static(portalDist, {
+  // Hashed filenames are safe to cache hard; index.html must not be,
+  // or a deploy leaves people on the previous bundle.
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+    else if (/\.[0-9a-f]{8,}\./.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  },
+}));
+
+app.get(/^\/portal(\/.*)?$/, (req, res) => {
+  const index = path.join(portalDist, 'index.html');
+  res.sendFile(index, (err) => {
+    if (err) {
+      res
+        .status(503)
+        .type('html')
+        .send(
+          '<h1>Portal not built</h1>' +
+          '<p>Run <code>npm run build:portal</code> and redeploy. ' +
+          'The compiled files belong in <code>public/portal/</code>.</p>'
+        );
+    }
+  });
+});
 app.use('/admin', adminRouter);
 
 // SECURITY: these three were previously unauthenticated — anyone with
@@ -165,6 +200,23 @@ mongoose
       // Doc §10: 10-minute nudge + 24-hour abandoned-session archive
       reminders.start();
       sheetQueue.start();   // batched Sheets mirror, off the reply path
+
+      // Report portal readiness at boot. Without this, a missing
+      // PORTAL_EMAIL only surfaces as a 503 from the login form, which
+      // sends people looking at the frontend for a backend config gap.
+      try {
+        const portalAuth = require('./services/auth');
+        if (portalAuth.isConfigured()) {
+          console.log(`[Portal] Sign-in ready for ${portalAuth.allowedEmail()} — /portal`);
+        } else {
+          console.log(
+            `[Portal] NOT configured. Missing: ${portalAuth.configProblems().join(', ')}`
+          );
+          console.log('[Portal] Run "npm run admin" to set up the one allowed account.');
+        }
+      } catch (err) {
+        console.error('[Portal] Could not read auth config:', err.message);
+      }
     });
   })
   .catch((err) => {
